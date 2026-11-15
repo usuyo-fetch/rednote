@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         usuyo：交出小红书的收藏和赞过
 // @namespace    usuyo-fetch/rednote
-// @version      0.4.0
+// @version      0.4.1
 // @description  在你自己的「收藏」「赞过」页上，只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题；点「交给 usuyo」时先确认本机 127.0.0.1:47615 上的是 usuyo，再把清单交过去，你在 usuyo 的导入页确认。没记到东西时，面板上的「复制诊断」会把回答的结构（字段名、类型、长度，不含任何内容）复制给你，由你自己决定给不给我们。不对小红书发额外请求、不自动滚动、不读 cookie，除了本机的 usuyo 不往别处发。
 // @match        https://www.xiaohongshu.com/*
 // @run-at       document-start
@@ -60,9 +60,9 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.4.0';
+  const VERSION = '0.4.1';
   const page = unsafeWindow;
-  // xsec_token 只在几小时内有效，记下超过这个时间的条目不再交
+  // xsec_token 会失效，多久没有可靠的数；记下超过这个时间的条目不再交
   const KEEP_MS = 12 * 60 * 60 * 1000;
   const LABEL = { favorite: '收藏', like: '赞过' };
   // usuyo 的本机端口。测试载入源码时把这一行换成别的端口；用户这边没有设置项。
@@ -693,8 +693,11 @@
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
 
+  // 收藏、赞过页上笔记链接带的 xsec_source，取单条时和 xsec_token 一起带（照 xhs-vault 的 userscript/xhs-export.user.js:147）
+  const XSEC_SOURCE = 'pc_user';
+
   function noteUrl(id, token) {
-    return 'https://www.xiaohongshu.com/explore/' + id + '?xsec_token=' + encodeURIComponent(token);
+    return 'https://www.xiaohongshu.com/explore/' + id + '?xsec_token=' + encodeURIComponent(token) + '&xsec_source=' + XSEC_SOURCE;
   }
 
   /** 还在有效期里的条目，按列表分好、每批不超过 BATCH_MAX。 */

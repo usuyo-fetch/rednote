@@ -264,6 +264,10 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     let note = spec.method("note-page").unwrap();
     assert_eq!(note.visitors, ["www.xiaohongshu.com"]);
     assert!(note.sites.is_empty() && note.capabilities.fetch.is_some());
+    // 清单的 outputs 和插件能给的一致
+    let outputs: std::collections::BTreeSet<_> =
+        usuyo_fetch_rednote::fetch::OUTPUTS.into_iter().collect();
+    assert_eq!(note.capabilities.fetch.as_ref().unwrap().outputs, outputs);
     let window = spec.method("in-usuyo").unwrap();
     assert!(window.reads_in_window() && !window.callable());
     assert_eq!(window.sites, ["www.xiaohongshu.com"]);

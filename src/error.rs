@@ -15,7 +15,7 @@ pub enum Error {
     LinkExpired(String),
     #[error("note not found: {0}")]
     NotFound(String),
-    /// 被送去首页或登录页；`cookie_tried` 说这次带没带访客 cookie。
+    /// 没有访客身份（`cookie_tried` 为假，没有发请求），或带着它还被送去首页、登录页（为真：这份不被收）。
     #[error("sent to {at} (visitor cookie used: {cookie_tried})")]
     VisitorRequired { at: String, cookie_tried: bool },
     #[error("verification page or risk-control answer: {0}")]
@@ -109,8 +109,8 @@ impl Error {
                 ErrorCode::VisitorRequired,
                 Some(if *cookie_tried {
                     lang.pick(
-                        "带上访客身份也被送回了首页，访客身份可能过期了：在「获取插件」页的小红书下面换一份",
-                        "Even with the visitor identity the page sent us home; it may have expired: take a fresh one on the fetch plugins page",
+                        "带着访客身份也被送去了登录页或首页，这份访客身份不被收：在「获取插件」页的小红书下面换一份",
+                        "Even with the visitor identity the page sent us to sign-in or home; it was not accepted: take a fresh one on the fetch plugins page",
                     )
                 } else {
                     lang.pick(

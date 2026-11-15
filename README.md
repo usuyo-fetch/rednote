@@ -1,10 +1,10 @@
 # usuyo-fetch/rednote
 
-小红书（rednote）的获取插件，供 [usuyo](https://github.com/usuyo/usuyo) 调用：按笔记链接取回正文、图片和视频。
+小红书（rednote）的获取插件，供 [usuyo](https://github.com/usuyo/usuyo) 调用：按笔记链接取回正文、图片、视频和平台字幕。
 
 | 功能 | 实现方式（方法 id） | 账号 | 风险层级 | 状态 |
 |---|---|---|---|---|
-| 按链接取单条笔记（正文、图片、视频） | `note-page` | 访客身份 | `public-web`，默认开 | 已实现 |
+| 按链接取单条笔记（正文、图片、视频、平台字幕） | `note-page` | 访客身份 | `public-web`，默认开 | 已实现 |
 | 列出我的收藏 | `in-usuyo` | 登录进 usuyo（站点窗口自己一份网页数据，cookie 不拷出来） | `browser-session`，默认开 | 已实现，只对本机假站点测过 |
 | 列出我的收藏 | `userscript` | 只在使用者的浏览器内 | `browser-session`，默认开 | 已实现 |
 | 列出我的收藏 | `iphone` | 只在手机的 App 内 | `vision-ui`，默认开 | 未实现 |
@@ -18,15 +18,17 @@
 
 ### note-page
 
-取单条笔记：正文、作者、发布时间、互动数、标签、图片、视频。请求公开笔记页，读页面里的 `window.__INITIAL_STATE__`；不登录、不签名，带访客身份（usuyo 打开一次首页、不登录，存下页面自己生成的 cookie）。认 `xhslink.com`、`xhslink.cn` 短链。空 cookie 的长链会被送回首页；不填 cookie 批量取约 108 条后，复制链接的账号被下线（见 XHS-Downloader 的 issue 305）。
+取单条笔记：正文、作者、发布时间、互动数、标签、图片、视频和平台自带的字幕。请求公开笔记页，读页面里的 `window.__INITIAL_STATE__`；不登录、不签名，第一个请求就带访客身份（usuyo 打开一次首页、不登录，存下页面自己生成的 cookie）。没有访客身份时不发请求，回 `visitor-required`，usuyo 去取一份再排这一条；带着访客身份还被送去登录页或首页，回 `visitor-required` 说这份不被收，usuyo 换一份；碰到验证页、HTTP 403/406/461/471、JSON 的风控码（300011、300012、300013、300015、461、471、-1）回 `blocked`，不重试。请求只带 `xsec_token` 和 `xsec_source`，链接里没有 `xsec_source` 时补 `pc_user`。认 `xhslink.com`、`xhslink.cn` 短链。
+
+视频在 `video.media.stream` 下每一档里挑，不认档名：先挑 h264 的 mp4，短边不超过 720 的最大那一档（不追最高画质），主地址不通试备用地址。字幕取 `video.media.video.subtitles`，按原声、`zh-CN`、`en-US` 的先后挑一份：WebVTT 原样存；SRT 原样留一份 `.srt`，另存一份换成 WebVTT 的交出去（usuyo 按 WebVTT 读字幕）。图片、视频、字幕只下 `*.xhscdn.com`、`*.rednotecdn.com` 上的地址，带 Referer、不带 cookie。不填 cookie 批量取约 108 条后，复制链接的账号被下线（见 XHS-Downloader 的 issue 305）。
 
 ### in-usuyo
 
-在 usuyo 给小红书单开的窗口里登录，脚本 `userscript/usuyo-xhs-window.js` 打开个人页，先读「收藏」再读「赞过」，默认隔几秒往下翻一屏，翻到底停下。只记页面自己请求回来的列表里的笔记 id、`xsec_token` 和标题，交给 usuyo；内容由 `note-page` 取。自动往下翻是用使用者的账号做的自动操作。
+在 usuyo 给小红书单开的窗口里登录，脚本 `userscript/usuyo-xhs-window.js` 打开个人页，先读「收藏」再读「赞过」，默认隔几秒往下翻一屏，翻到底停下。只记页面自己请求回来的列表里的笔记 id、`xsec_token` 和标题，链接带上 `xsec_source=pc_user` 交给 usuyo；内容由 `note-page` 取。自动往下翻是用使用者的账号做的自动操作。
 
 ### userscript
 
-浏览器脚本 `userscript/usuyo-xhs-saved.user.js`，在使用者自己浏览器的脚本管理器里运行，读「收藏」「赞过」的链接，只截获页面自己的请求，不另发请求。网页对采集类扩展会弹「有害插件」提示。
+浏览器脚本 `userscript/usuyo-xhs-saved.user.js`，在使用者自己浏览器的脚本管理器里运行，读「收藏」「赞过」的链接（带 `xsec_token` 和 `xsec_source=pc_user`），只截获页面自己的请求，不另发请求。网页对采集类扩展会弹「有害插件」提示。
 
 ### iphone
 
@@ -36,7 +38,7 @@
 
 通过安卓手机在手机的小红书 App 内读收藏和赞过，需要登录。未实现。
 
-`userscript` 改写自 [xhs-vault](https://github.com/wkwunju/xhs-vault) 的浏览器脚本（MIT，许可声明见 `userscript/LICENSE.xhs-vault`）。笔记页状态对象的字段名参照了 [ParseHub](https://github.com/z-mio/ParseHub)（MIT）和 [XHS-Downloader](https://github.com/JoeanAmier/XHS-Downloader)（GPL-3.0）的源码，没有用它们的代码，见 `src/state.rs`。
+`userscript` 改写自 [xhs-vault](https://github.com/wkwunju/xhs-vault) 的浏览器脚本（MIT，许可声明见 `userscript/LICENSE.xhs-vault`）。笔记页状态对象的字段名参照了 [ParseHub](https://github.com/z-mio/ParseHub)（MIT）和 [XHS-Downloader](https://github.com/JoeanAmier/XHS-Downloader)（GPL-3.0）的源码，视频分档不认档名的做法参照了 [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)（NON-COMMERCIAL LEARNING LICENSE 1.1），字幕的位置参照了 xhs-vault，都没有用它们的代码，见 `src/state.rs`。
 
 测试：`cargo test`，只连本机假服务；页面改版时改 `src/state.rs`。两个脚本由 `userscript/src/` 的一个核心和两个壳拼成：改了以后跑 `node userscript/build.mjs`，`node --test userscript/test/*.test.mjs` 核对拼好的文件没过时。依赖同级目录下 usuyo 仓库的 `usuyo-plugin-kit`。许可证：MIT。
 

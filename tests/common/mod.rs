@@ -14,6 +14,9 @@ pub const COOKIE: &str = "a1=visitor-a1; webId=visitor-web; web_session=visitor-
 pub const WEBP: &[u8] = b"RIFF\x10\x00\x00\x00WEBPVP8 fake";
 pub const JPEG: &[u8] = b"\xff\xd8\xff\xe0fake-jpeg";
 pub const MP4: &[u8] = b"\x00\x00\x00\x18ftypmp42fake-video-bytes";
+/// 手写的字幕样例。
+pub const SRT: &str = "1\n00:00:00,000 --> 00:00:02,500\n先称 30 克豆子\n";
+pub const VTT: &str = "WEBVTT\n\n00:00.000 --> 00:02.500\nfirst weigh the beans\n";
 
 #[derive(Debug, Clone)]
 pub struct Seen {
@@ -78,6 +81,7 @@ impl Fake {
                 s.server == "web"
                     && !s.target.starts_with("/img/")
                     && !s.target.starts_with("/media/")
+                    && !s.target.starts_with("/sub/")
             })
             .collect()
     }
@@ -114,11 +118,17 @@ fn redirect(status: &'static str, to: String) -> Reply {
 }
 
 fn fixture(name: &str, web: &str) -> Vec<u8> {
+    fixture_with(name, web, "/sub/zh.srt")
+}
+
+/// `{SUBPATH}` 是 `video-ef.html` 里中文字幕的路径。
+fn fixture_with(name: &str, web: &str, sub_path: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(path)
         .unwrap()
         .replace("{BASE}", web)
         .replace("{ID}", ID)
+        .replace("{SUBPATH}", sub_path)
         .into_bytes()
 }
 
@@ -139,7 +149,17 @@ fn web_route(target: &str, cookie: Option<&str>, web: &str) -> Reply {
         "/img/b.jpg" | "/img/cover.jpg" => return reply("200 OK", "image/jpeg", JPEG),
         "/media/v.mp4" | "/media/low.mp4" => return reply("200 OK", "video/mp4", MP4),
         "/media/broken.mp4" => return reply("500 Internal Server Error", "text/plain", "boom"),
+        "/sub/zh.srt" => return reply("200 OK", "application/octet-stream", SRT),
+        "/sub/zh.vtt" => return reply("200 OK", "text/vtt", VTT),
         _ => {}
+    }
+    // 笔记页的请求都该带着访客身份：没带的回 500，测试一眼看得出
+    if !with_cookie {
+        return reply(
+            "500 Internal Server Error",
+            "text/plain",
+            "no visitor cookie",
+        );
     }
     let note_paths = [format!("/explore/{ID}"), format!("/discovery/item/{ID}")];
     if !note_paths.iter().any(|p| p == path) {
@@ -154,9 +174,17 @@ fn web_route(target: &str, cookie: Option<&str>, web: &str) -> Reply {
         "bare" => page("bare-note.html"),
         "livefail" => page("live-broken.html"),
         "hop" => redirect("302 Found", format!("/explore/{ID}?xsec_token=ok")),
-        "needcookie" if with_cookie => page("image-note.html"),
-        "needcookie" => redirect("302 Found", "/".into()),
-        "absent" if with_cookie => page("image-note.html"),
+        "ef" => page("video-ef.html"),
+        "efvtt" => reply(
+            "200 OK",
+            "text/html; charset=utf-8",
+            fixture_with("video-ef.html", web, "/sub/zh.vtt"),
+        ),
+        "efsubgone" => reply(
+            "200 OK",
+            "text/html; charset=utf-8",
+            fixture_with("video-ef.html", web, "/sub/missing.srt"),
+        ),
         "absent" => page("absent-note.html"),
         "home" => redirect("302 Found", format!("{web}/explore")),
         "login" => redirect(
@@ -186,6 +214,12 @@ fn web_route(target: &str, cookie: Option<&str>, web: &str) -> Reply {
             ..reply("429 Too Many Requests", "text/html", "")
         },
         "gateway" => reply("461 Unknown", "application/json", r#"{"code":461}"#),
+        "gateway471" => reply("471 Unknown", "text/html", "<html></html>"),
+        "restricted" => reply(
+            "200 OK",
+            "application/json",
+            r#"{"code":300011,"success":false,"msg":"当前账号存在异常"}"#,
+        ),
         _ => reply("404 Not Found", "text/html", "<html>404</html>"),
     }
 }

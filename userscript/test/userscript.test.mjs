@@ -136,7 +136,7 @@ test('delivers both lists to a throwaway usuyo daemon', { skip: !BIN && 'USUYO_B
     assert.equal(entries.length, n);
     for (const e of entries) {
       assert.equal(e.action, action);
-      assert.match(e.url, /^https:\/\/www\.xiaohongshu\.com\/explore\/[0-9a-f]{24}\?xsec_token=/);
+      assert.match(e.url, /^https:\/\/www\.xiaohongshu\.com\/explore\/[0-9a-f]{24}\?xsec_token=[^&]+&xsec_source=pc_user$/);
       assert.match(e.title, /^笔记 \d$/);
     }
   }
@@ -622,8 +622,8 @@ test('a quiet page says so once, calmly, and only until a list answer is recogni
 });
 
 test('the version is bumped and the diagnosis code is the same in all three scripts', () => {
-  assert.match(SCRIPT_TEXT, /^\/\/ @version      0\.4\.0$/m);
-  assert.ok(SCRIPT_TEXT.includes("const VERSION = '0.4.0';"));
+  assert.match(SCRIPT_TEXT, /^\/\/ @version      0\.4\.1$/m);
+  assert.ok(SCRIPT_TEXT.includes("const VERSION = '0.4.1';"));
   for (const sibling of ['../../../x/userscript/usuyo-x-saved.user.js', '../../../bilibili/userscript/usuyo-bilibili-saved.user.js']) {
     const url = new URL(sibling, import.meta.url);
     assert.ok(existsSync(url), 'sibling script is expected at ' + url.pathname);

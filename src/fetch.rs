@@ -1,5 +1,5 @@
-//! 取一篇笔记（协议 §3.6、§3.7）：先不带 cookie 请求笔记页；被送去首页或登录页时，
-//! 有访客 cookie 就带上再试一次，只试一次；解析状态对象，按 `--want` 下载图片和视频。
+//! 取一篇笔记（协议 §3.6、§3.7）：带着宿主交来的访客身份请求笔记页，只请求一次，不重试；
+//! 解析状态对象，按 `--want` 下载图片、视频和平台字幕。
 
 use std::collections::BTreeSet;
 use std::fs::{self, File};
@@ -19,13 +19,14 @@ use crate::error::Error;
 use crate::http::{self, Http, Purpose};
 use crate::link::{self, Link, NoteLink};
 use crate::site::{CANONICAL_ORIGIN, Site};
-use crate::state::{self, Note, NoteKind, StateError, Stream};
+use crate::state::{self, Note, NoteKind, StateError, Stream, Subtitle};
 
 /// 本插件能给的输出，和清单里的 `outputs` 一致。
-pub const OUTPUTS: [OutputKind; 4] = [
+pub const OUTPUTS: [OutputKind; 5] = [
     OutputKind::Text,
     OutputKind::Images,
     OutputKind::Video,
+    OutputKind::Subtitle,
     OutputKind::Meta,
 ];
 
@@ -44,6 +45,8 @@ const VIDEO_BYTES: u64 = 2 << 30;
 /// 实况图的动态部分只有几秒。
 const LIVE_BYTES: u64 = 64 << 20;
 const PROGRESS_STEP: u64 = 8 << 20;
+const SUBTITLE_TIMEOUT: Duration = Duration::from_secs(20);
+const SUBTITLE_BYTES: u64 = 4 << 20;
 
 pub struct Request<'a> {
     /// 原链接或 `canonicalize` 给的 `resolvedUrl`。
@@ -61,11 +64,24 @@ pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
         return Err(Error::InvalidArgs(format!("cannot give `{other}`")));
     }
     let http = Http::new(site, BUDGET);
+    // 第一个请求就带访客身份（照 ParseHub `parsers/parser/xhs.py:36-58` 的先后、XHS-Downloader 有 cookie 就带）；
+    // 没有就什么请求都不发（短链也不展开），回 `visitor-required`，宿主开不登录的访客窗口取一份再排这一条
+    let visitor = || {
+        request
+            .visitor_cookie
+            .ok_or_else(|| Error::VisitorRequired {
+                at: "no request sent: no visitor identity was handed over".into(),
+                cookie_tried: false,
+            })
+    };
     let note_link = match link::classify(site, request.input) {
         Some(Link::Note(n)) => n,
-        Some(Link::Short(short)) => link::expand(&http, &short)?.ok_or_else(|| {
-            Error::Unsupported(format!("`{}` does not lead to a note", request.input))
-        })?,
+        Some(Link::Short(short)) => {
+            visitor()?;
+            link::expand(&http, &short)?.ok_or_else(|| {
+                Error::Unsupported(format!("`{}` does not lead to a note", request.input))
+            })?
+        }
         None => {
             return Err(Error::Unsupported(format!(
                 "`{}` is not a note link",
@@ -78,39 +94,12 @@ pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
         return Err(Error::LinkExpired("the link carries no xsec_token".into()));
     }
 
+    let cookie = visitor()?;
     let fetched_at = Rfc3339::from_timestamp(jiff::Timestamp::now());
-    let (page, cookie_used) = match load_page(&http, &note_link, None) {
-        Ok(page) => (page, false),
-        Err(Error::VisitorRequired { at, .. }) => match request.visitor_cookie {
-            Some(cookie) => match load_page(&http, &note_link, Some(cookie)) {
-                Ok(page) => (page, true),
-                Err(Error::VisitorRequired { at, .. }) => {
-                    return Err(Error::VisitorRequired {
-                        at,
-                        cookie_tried: true,
-                    });
-                }
-                Err(other) => return Err(other),
-            },
-            None => {
-                return Err(Error::VisitorRequired {
-                    at,
-                    cookie_tried: false,
-                });
-            }
-        },
-        Err(other) => return Err(other),
-    };
+    // 带着访客身份还被送去登录页、首页：回 `visitor-required`（这份不被收），宿主换一份再试这一条
+    let page = load_page(&http, &note_link, cookie)?;
 
-    write_note(
-        &http,
-        page,
-        &note_link,
-        &wanted,
-        cookie_used,
-        fetched_at,
-        request.out,
-    )
+    write_note(&http, page, &note_link, &wanted, fetched_at, request.out)
 }
 
 /// 取到的一篇笔记；`status` 是笔记页的 HTTP 状态。
@@ -121,14 +110,21 @@ pub(crate) struct Page {
 
 /// 请求一次笔记页（加上最多几跳指向同一篇笔记的重定向），认出拿到的是什么。
 /// 指向首页、登录页、验证页、404 页的重定向只看地址，不去请求。
-fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Result<Page, Error> {
+/// 送去首页、登录页的回 `visitor-required`，这次带着访客身份。
+fn load_page(http: &Http<'_>, note: &NoteLink, cookie: &Cookie) -> Result<Page, Error> {
     let mut at = note.page_url(http.site());
     for _ in 0..PAGE_HOPS {
-        let mut response = http.get(&at, Purpose::Page { cookie }, PAGE_TIMEOUT)?;
+        let mut response = http.get(
+            &at,
+            Purpose::Page {
+                cookie: Some(cookie),
+            },
+            PAGE_TIMEOUT,
+        )?;
         let status = response.status();
         if let Some(next) = http::location(&response, &at)? {
             refuse_redirect(http.site(), &next, &note.id)?;
-            at = link::page_url(http.site(), &next);
+            at = note.redirect_url(http.site(), &next);
             continue;
         }
         match status {
@@ -139,7 +135,8 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
                     retry_after: http::retry_after(&response),
                 });
             }
-            403 | 406 | 461 => {
+            // 471 照 MediaCrawler `media_platform/xhs/client.py:153-184`
+            403 | 406 | 461 | 471 => {
                 return Err(Error::Blocked(format!("note page answered HTTP {status}")));
             }
             500..=599 => return Err(Error::Network(format!("note page answered HTTP {status}"))),
@@ -158,7 +155,7 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
             .to_ascii_lowercase();
         let body = http.read_capped(&mut response, PAGE_BYTES)?;
         let text = String::from_utf8_lossy(&body);
-        // 页面不是能用的笔记：错误带着页面的开头走（要访客身份的不带，调用方要认出它再带 cookie 试一次）
+        // 页面不是能用的笔记：错误带着页面的开头走，宿主记进失败日志（要访客身份的不带）
         let page = || -> Result<Page, Error> {
             if content_type.contains("json") || text.trim_start().starts_with('{') {
                 return Err(risk_json(&text));
@@ -178,7 +175,7 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
                 // 页面结构在、这篇的内容没给：和被送回首页一样，是要访客 cookie 的样子
                 Err(StateError::Absent(id)) => Err(Error::VisitorRequired {
                     at: format!("a page without content for note {id}"),
-                    cookie_tried: cookie.is_some(),
+                    cookie_tried: true,
                 }),
                 Err(other) => Err(other.into()),
             }
@@ -194,7 +191,8 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
 }
 
 /// 重定向去处的分类（依据 xiaohongshu-cli `status.go`、ParseHub、xiaohongshu-mcp
-/// `page_check.go`）。只有指向同一篇笔记的才返回 `Ok`，接着跟。
+/// `page_check.go`）。只有指向同一篇笔记的才返回 `Ok`，接着跟。请求总带着访客身份，
+/// 所以送去登录页、首页的都是「这份访客身份不被收」。
 fn refuse_redirect(site: &Site, next: &Url, id: &str) -> Result<(), Error> {
     if !site.is_web(next) {
         return Err(Error::UpstreamChanged(format!(
@@ -219,7 +217,7 @@ fn refuse_redirect(site: &Site, next: &Url, id: &str) -> Result<(), Error> {
     if path.starts_with("/login") || path.starts_with("/website-login") {
         return Err(Error::VisitorRequired {
             at,
-            cookie_tried: false,
+            cookie_tried: true,
         });
     }
     if path.starts_with("/404/sec_") {
@@ -243,13 +241,14 @@ fn refuse_redirect(site: &Site, next: &Url, id: &str) -> Result<(), Error> {
     if matches!(path, "/" | "/explore" | "/explore/") {
         return Err(Error::VisitorRequired {
             at,
-            cookie_tried: false,
+            cookie_tried: true,
         });
     }
     Err(Error::UpstreamChanged(format!("redirected to {path}")))
 }
 
-/// 笔记页回了 JSON 而不是页面：按 code 分（xiaohongshu-cli `codeStatus`）。
+/// 笔记页回了 JSON 而不是页面：按 code 分（xiaohongshu-cli `codeStatus`；300011、471 照 MediaCrawler
+/// `media_platform/xhs/client.py:153-184`）。
 fn risk_json(text: &str) -> Error {
     let value: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -262,14 +261,14 @@ fn risk_json(text: &str) -> Error {
         .unwrap_or_default();
     let described = format!("note page answered JSON code {code:?} `{msg}`");
     match code {
-        Some(300012 | 300013 | 300015 | 461 | -1) => Error::Blocked(described),
+        Some(300011 | 300012 | 300013 | 300015 | 461 | 471 | -1) => Error::Blocked(described),
         Some(-510 | 10013) => Error::RateLimited {
             message: described,
             retry_after: None,
         },
         Some(-100 | -101) => Error::VisitorRequired {
             at: described,
-            cookie_tried: false,
+            cookie_tried: true,
         },
         Some(300031) => Error::LinkExpired(described),
         _ if matches!(msg, "笔记不存在" | "该笔记不存在或已删除") => {
@@ -299,7 +298,6 @@ pub(crate) fn write_note(
     page: Page,
     link: &NoteLink,
     wanted: &BTreeSet<OutputKind>,
-    cookie_used: bool,
     fetched_at: Rfc3339,
     out: &Path,
 ) -> Result<FetchOutput, Error> {
@@ -405,6 +403,25 @@ pub(crate) fn write_note(
         }
     }
 
+    // 平台字幕：地址带过期参数，在这一次里下载
+    let mut subtitle_record = serde_json::Value::Null;
+    if wanted.contains(&OutputKind::Subtitle)
+        && let Some(sub) = &note.subtitle
+    {
+        match download_subtitle(http, sub, out) {
+            Ok(m) => {
+                subtitle_record =
+                    json!({"path": m.path.as_str(), "url": sub.url, "lang": sub.lang});
+                media.push(m);
+            }
+            Err(why) => {
+                failed.push(json!({"subtitle": sub.url, "why": why}));
+                missing.push(OutputKind::Subtitle);
+                reasons.push(format!("字幕没有下载下来：{why}"));
+            }
+        }
+    }
+
     let published_at = note
         .published_ms
         .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
@@ -438,7 +455,8 @@ pub(crate) fn write_note(
             "images": image_records,
             "video": video_record,
             "failed": failed,
-            "visitorCookieUsed": cookie_used,
+            "subtitle": subtitle_record,
+            "visitorCookieUsed": true,
         });
         fs::write(out.join("meta.json"), pretty(&meta)?)?;
         if note.title.is_none()
@@ -546,6 +564,64 @@ fn download_image(
     fs::create_dir_all(out.join("images")).map_err(|e| e.to_string())?;
     fs::write(out.join(&name), &bytes).map_err(|e| e.to_string())?;
     Ok(rel(&name))
+}
+
+/// 下载平台字幕。WebVTT 原样存成 `.vtt`；别的当 SRT：原样存成 `.srt`（不被引用，随快照留着），
+/// 另写一份换成 WebVTT 的 `.vtt` 交出去，因为宿主把 `kind: subtitle` 的文件都按 WebVTT 读。
+fn download_subtitle(http: &Http<'_>, sub: &Subtitle, out: &Path) -> Result<Media, String> {
+    let url = http
+        .site()
+        .media_url(&sub.url)
+        .ok_or_else(|| "字幕地址不在插件的主机名单里，没有去取".to_owned())?;
+    let mut response = http
+        .get(&url, Purpose::Subtitle, SUBTITLE_TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    if !(200..300).contains(&response.status()) {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let bytes = http
+        .read_capped(&mut response, SUBTITLE_BYTES)
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
+    let body = text.trim_start_matches('\u{feff}');
+    if body.trim().is_empty() {
+        return Err("字幕是空的".into());
+    }
+    let stem = match &sub.lang {
+        Some(lang) => format!("media/subtitle.{lang}"),
+        None => "media/subtitle".to_owned(),
+    };
+    fs::create_dir_all(out.join("media")).map_err(|e| e.to_string())?;
+    let vtt = if body.starts_with("WEBVTT") {
+        bytes.clone()
+    } else {
+        fs::write(out.join(format!("{stem}.srt")), &bytes).map_err(|e| e.to_string())?;
+        srt_to_vtt(body).into_bytes()
+    };
+    let name = format!("{stem}.vtt");
+    fs::write(out.join(&name), &vtt).map_err(|e| e.to_string())?;
+    Ok(Media {
+        path: rel(&name),
+        kind: MediaKind::Subtitle,
+        mime: Some("text/vtt".into()),
+        lang: sub.lang.clone(),
+        duration_sec: None,
+        group: None,
+    })
+}
+
+/// SRT 换成 WebVTT：加上 `WEBVTT` 头，时间行里毫秒前的 `,` 换成 `.`；序号行留着当 cue 的名字。
+fn srt_to_vtt(srt: &str) -> String {
+    let mut vtt = String::from("WEBVTT\n\n");
+    for line in srt.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if line.contains("-->") {
+            vtt.push_str(&line.replace(',', "."));
+        } else {
+            vtt.push_str(line);
+        }
+        vtt.push('\n');
+    }
+    vtt
 }
 
 fn image_extension(content_type: &str) -> Option<&'static str> {
@@ -824,6 +900,16 @@ mod tests {
             refuse_redirect(&site, &Url::parse("https://example.com/").unwrap(), ID),
             Err(Error::UpstreamChanged(_))
         ));
+    }
+
+    #[test]
+    fn srt_becomes_webvtt() {
+        assert_eq!(
+            srt_to_vtt(
+                "1\r\n00:00:01,250 --> 00:00:02,000\r\n先称豆子, 再磨\r\n\r\n2\r\n00:00:02,000 --> 00:00:03,500\r\n注水\r\n"
+            ),
+            "WEBVTT\n\n1\n00:00:01.250 --> 00:00:02.000\n先称豆子, 再磨\n\n2\n00:00:02.000 --> 00:00:03.500\n注水\n"
+        );
     }
 
     #[test]

@@ -1,12 +1,12 @@
-//! 对着本机的假小红书跑 canonicalize 和 fetch：解析、重定向 → 访客 cookie 重试 → visitor-required、
-//! 错误映射、输出目录里有什么。
+//! 对着本机的假小红书跑 canonicalize 和 fetch：解析、第一个请求就带访客 cookie、visitor-required、
+//! 错误映射、`xsec_source`、视频分档和备用地址、平台字幕、输出目录里有什么。
 
 mod common;
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use common::{COOKIE, Fake, ID, JPEG, MP4, WEBP};
+use common::{COOKIE, Fake, ID, JPEG, MP4, SRT, VTT, WEBP};
 use tempfile::TempDir;
 use usuyo_fetch_rednote::fetch::{self, Request};
 use usuyo_fetch_rednote::{Error, Lang, link};
@@ -84,7 +84,7 @@ fn read_json(dir: &Path, name: &str) -> serde_json::Value {
 #[test]
 fn image_note_with_js_literal_quirks() {
     let fake = Fake::start();
-    let got = run(&fake, &fake.note_url("ok"), None, None);
+    let got = run(&fake, &fake.note_url("ok"), Some(COOKIE), None);
     let out = ok(&got);
 
     assert_eq!(out.identity, Some(link::identity(ID)));
@@ -138,7 +138,7 @@ fn image_note_with_js_literal_quirks() {
     assert_eq!(meta["counts"]["liked"], "1.2万");
     assert_eq!(meta["ipLocation"], "上海");
     assert_eq!(meta["failed"][0]["url"], "https://evil.example/c.jpg");
-    assert_eq!(meta["visitorCookieUsed"], false);
+    assert_eq!(meta["visitorCookieUsed"], true);
     assert_eq!(read_json(dir, "note.json")["noteId"], ID);
 
     // 一次笔记页请求，图片只请求名单内的两张，图片请求带源作 Referer、不带 cookie
@@ -163,7 +163,7 @@ fn image_note_with_js_literal_quirks() {
 #[test]
 fn video_note_uses_page_streams_only() {
     let fake = Fake::start();
-    let got = run(&fake, &fake.note_url("video"), None, None);
+    let got = run(&fake, &fake.note_url("video"), Some(COOKIE), None);
     let out = ok(&got);
     assert_eq!(out.kind, ItemKind::Video);
     assert_eq!(
@@ -206,7 +206,7 @@ fn video_note_uses_page_streams_only() {
 #[test]
 fn live_photos_are_saved_as_video() {
     let fake = Fake::start();
-    let got = run(&fake, &fake.note_url("live"), None, None);
+    let got = run(&fake, &fake.note_url("live"), Some(COOKIE), None);
     let out = ok(&got);
     assert_eq!(
         out.completeness,
@@ -232,7 +232,7 @@ fn live_photos_are_saved_as_video() {
 fn a_part_the_note_never_had_is_not_missing() {
     // 没有正文、没有视频、图片有：全要也是 full，没有原因
     let fake = Fake::start();
-    let got = run(&fake, &fake.note_url("bare"), None, None);
+    let got = run(&fake, &fake.note_url("bare"), Some(COOKIE), None);
     let out = ok(&got);
     assert_eq!(out.completeness, Completeness::Full);
     assert!(out.missing.is_empty() && out.missing_reason.is_none());
@@ -243,7 +243,7 @@ fn a_part_the_note_never_had_is_not_missing() {
 #[test]
 fn live_photo_video_that_fails_is_missing_with_a_reason() {
     let fake = Fake::start();
-    let got = run(&fake, &fake.note_url("livefail"), None, None);
+    let got = run(&fake, &fake.note_url("livefail"), Some(COOKIE), None);
     let out = ok(&got);
     assert_eq!(out.completeness, Completeness::Partial);
     assert_eq!(out.missing, [OutputKind::Video]);
@@ -256,7 +256,7 @@ fn live_photo_video_that_fails_is_missing_with_a_reason() {
 #[test]
 fn video_note_without_streams_is_partial() {
     let fake = Fake::start();
-    let got = run(&fake, &fake.note_url("nostream"), None, None);
+    let got = run(&fake, &fake.note_url("nostream"), Some(COOKIE), None);
     let out = ok(&got);
     assert_eq!(out.completeness, Completeness::Partial);
     assert_eq!(out.missing, [OutputKind::Video]);
@@ -271,7 +271,7 @@ fn want_limits_what_is_downloaded() {
     let got = run(
         &fake,
         &fake.note_url("video"),
-        None,
+        Some(COOKIE),
         Some(&[OutputKind::Text]),
     );
     let out = ok(&got);
@@ -284,29 +284,38 @@ fn want_limits_what_is_downloaded() {
 #[test]
 fn same_note_redirect_is_followed() {
     let fake = Fake::start();
-    let input = format!("{}/discovery/item/{ID}?xsec_token=hop", fake.web);
-    let got = run(&fake, &input, None, Some(&[OutputKind::Text]));
+    let input = format!(
+        "{}/discovery/item/{ID}?xsec_token=hop&xsec_source=app_share",
+        fake.web
+    );
+    let got = run(&fake, &input, Some(COOKIE), Some(&[OutputKind::Text]));
     assert!(ok(&got).text.is_some());
-    assert_eq!(fake.page_requests().len(), 2);
+    // 去处没写 xsec_source：沿用原链接的
+    let targets: Vec<String> = fake.page_requests().into_iter().map(|s| s.target).collect();
+    assert_eq!(
+        targets,
+        [
+            format!("/discovery/item/{ID}?xsec_token=hop&xsec_source=app_share"),
+            format!("/explore/{ID}?xsec_token=ok&xsec_source=app_share"),
+        ]
+    );
 }
 
 #[test]
-fn home_redirect_retries_once_with_the_visitor_cookie() {
+fn the_first_page_request_carries_the_visitor_cookie() {
     let fake = Fake::start();
     let got = run(
         &fake,
-        &fake.note_url("needcookie"),
+        &fake.note_url("ok"),
         Some(COOKIE),
         Some(&[OutputKind::Text, OutputKind::Meta]),
     );
     let out = ok(&got);
     assert!(out.text.is_some());
+    // 只有一次笔记页请求，第一次就带着访客身份
     let pages = fake.page_requests();
-    assert_eq!(pages.len(), 2);
-    assert_eq!(pages[0].cookie, None);
-    assert_eq!(pages[1].cookie.as_deref(), Some(COOKIE));
-    // 重定向的去处（首页）没有被请求
-    assert!(pages.iter().all(|p| p.target != "/"));
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    assert_eq!(pages[0].cookie.as_deref(), Some(COOKIE));
     assert_eq!(
         read_json(got.dir.path(), "meta.json")["visitorCookieUsed"],
         true
@@ -324,52 +333,38 @@ fn home_redirect_retries_once_with_the_visitor_cookie() {
 }
 
 #[test]
-fn empty_note_content_also_takes_the_cookie_path() {
+fn without_a_visitor_identity_nothing_is_requested() {
     let fake = Fake::start();
-    let got = run(
-        &fake,
-        &fake.note_url("absent"),
-        Some(COOKIE),
-        Some(&[OutputKind::Text]),
-    );
-    assert!(ok(&got).text.is_some());
-    assert_eq!(fake.page_requests().len(), 2);
-
-    let fake = Fake::start();
-    let f = failure(&run(&fake, &fake.note_url("absent"), None, None));
-    assert_eq!(f.code, ErrorCode::VisitorRequired);
-    assert_eq!(fake.page_requests().len(), 1);
+    // 长链不请求笔记页，短链也不去展开
+    for input in [fake.note_url("ok"), format!("{}/abc", fake.short)] {
+        let f = failure(&run(&fake, &input, None, None));
+        assert_eq!(f.code, ErrorCode::VisitorRequired, "{input}");
+        assert!(
+            f.hint.as_deref().unwrap().contains("取一份访客身份"),
+            "{f:?}"
+        );
+    }
+    assert!(fake.seen().is_empty(), "{:?}", fake.seen());
 }
 
+/// 带着访客身份还被送去登录页、首页，或页面里没有这篇：回 visitor-required 说这份不被收（宿主换一份），
+/// 不再请求一次，也不去请求送去的地方。
 #[test]
-fn without_a_cookie_home_means_visitor_required() {
-    let fake = Fake::start();
-    let f = failure(&run(&fake, &fake.note_url("needcookie"), None, None));
-    assert_eq!(f.code, ErrorCode::VisitorRequired);
-    assert!(f.hint.as_deref().unwrap().contains("访客身份"), "{f:?}");
-    assert_eq!(fake.page_requests().len(), 1);
-}
-
-#[test]
-fn a_stale_cookie_is_tried_once_then_reported() {
-    for token in ["home", "login"] {
+fn a_rejected_visitor_identity_is_reported_for_replacement() {
+    for token in ["home", "login", "absent"] {
         let fake = Fake::start();
         let f = failure(&run(&fake, &fake.note_url(token), Some(COOKIE), None));
         assert_eq!(f.code, ErrorCode::VisitorRequired, "{token}");
-        assert!(f.hint.as_deref().unwrap().contains("过期"), "{f:?}");
+        assert!(f.hint.as_deref().unwrap().contains("换一份"), "{f:?}");
         let pages = fake.page_requests();
-        assert_eq!(pages.len(), 2, "{token}: {pages:?}");
-        assert!(
-            pages
-                .iter()
-                .all(|p| !p.target.starts_with("/login") && p.target != "/explore")
-        );
+        assert_eq!(pages.len(), 1, "{token}: {pages:?}");
+        assert_eq!(pages[0].cookie.as_deref(), Some(COOKIE));
     }
 }
 
 #[test]
 fn error_mapping() {
-    let cases: [(&str, ErrorCode, Option<NotFoundReason>); 11] = [
+    let cases: [(&str, ErrorCode, Option<NotFoundReason>); 13] = [
         (
             "expired",
             ErrorCode::NotFound,
@@ -380,6 +375,8 @@ fn error_mapping() {
         ("risk", ErrorCode::Blocked, None),
         ("verify", ErrorCode::Blocked, None),
         ("gateway", ErrorCode::Blocked, None),
+        ("gateway471", ErrorCode::Blocked, None),
+        ("restricted", ErrorCode::Blocked, None),
         ("gone", ErrorCode::NotFound, None),
         ("limited", ErrorCode::RateLimited, None),
         ("changed", ErrorCode::UpstreamChanged, None),
@@ -388,7 +385,7 @@ fn error_mapping() {
     ];
     for (token, code, reason) in cases {
         let fake = Fake::start();
-        // 带着 cookie 也不该重试：这些都不是「被送回首页」
+        // 一次请求就回，不重试；验证页、404 页这些送去的地方也不去请求
         let f = failure(&run(&fake, &fake.note_url(token), Some(COOKIE), None));
         assert_eq!((f.code, f.reason), (code, reason), "{token}: {f:?}");
         assert_eq!(fake.page_requests().len(), 1, "{token}");
@@ -425,7 +422,7 @@ fn rejects_what_it_cannot_take() {
     let f = failure(&run(
         &fake,
         &fake.note_url("ok"),
-        None,
+        Some(COOKIE),
         Some(&[OutputKind::Html]),
     ));
     assert_eq!(f.code, ErrorCode::InvalidArgs);
@@ -491,7 +488,7 @@ fn short_links_expand_without_touching_the_note_host() {
 }
 
 #[test]
-fn fetch_takes_a_short_link_and_sends_no_cookie_to_it() {
+fn fetch_takes_a_short_link_and_sends_the_cookie_only_to_the_note_page() {
     let fake = Fake::start();
     let got = run(
         &fake,
@@ -502,7 +499,10 @@ fn fetch_takes_a_short_link_and_sends_no_cookie_to_it() {
     assert!(ok(&got).text.is_some());
     let seen = fake.seen();
     assert_eq!(seen.len(), 2, "{seen:?}");
-    assert!(seen.iter().all(|s| s.cookie.is_none()));
+    for s in &seen {
+        let want = (s.server == "web").then_some(COOKIE);
+        assert_eq!(s.cookie.as_deref(), want, "{s:?}");
+    }
     // 分享链接里指向分享人的参数不发给笔记页
     let page = &fake.page_requests()[0];
     assert_eq!(
@@ -516,7 +516,147 @@ fn fetch_takes_a_short_link_and_sends_no_cookie_to_it() {
 #[test]
 fn english_hints_follow_the_locale() {
     let fake = Fake::start();
-    let got = run(&fake, &fake.note_url("needcookie"), None, None);
+    let got = run(&fake, &fake.note_url("login"), Some(COOKIE), None);
     let hint = got.result.unwrap_err().to_failure(Lang::En).hint.unwrap();
     assert!(hint.contains("visitor identity"), "{hint}");
+}
+
+/// 档名是 `EF*` 时照样挑出 h264 mp4 里短边不超过 720 的那一档；主地址 500 换备用地址；
+/// 平台字幕（中文，SRT）原样存成 .srt，另存一份 WebVTT 作 `subtitle` 交出。
+#[test]
+fn video_buckets_by_any_name_with_backup_and_subtitle() {
+    let fake = Fake::start();
+    let got = run(&fake, &fake.note_url("ef"), Some(COOKIE), None);
+    let out = ok(&got);
+    assert_eq!(out.kind, ItemKind::Video);
+    assert_eq!(
+        out.completeness,
+        Completeness::Full,
+        "{:?}",
+        out.missing_reason
+    );
+    let kinds: Vec<_> = out
+        .media
+        .iter()
+        .map(|m| (m.path.as_str(), m.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("media/video.mp4", MediaKind::Video),
+            ("media/subtitle.zh-CN.vtt", MediaKind::Subtitle)
+        ]
+    );
+    let sub = &out.media[1];
+    assert_eq!(sub.lang.as_deref(), Some("zh-CN"));
+    assert_eq!(sub.mime.as_deref(), Some("text/vtt"));
+    let dir = got.dir.path();
+    assert_eq!(std::fs::read(dir.join("media/video.mp4")).unwrap(), MP4);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("media/subtitle.zh-CN.srt")).unwrap(),
+        SRT
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("media/subtitle.zh-CN.vtt")).unwrap(),
+        "WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.500\n先称 30 克豆子\n"
+    );
+    let meta = read_json(dir, "meta.json");
+    assert_eq!(meta["video"]["codec"], "h264");
+    assert_eq!(meta["subtitle"]["lang"], "zh-CN");
+
+    let media: Vec<_> = fake
+        .seen()
+        .into_iter()
+        .filter(|s| s.target.starts_with("/media/") || s.target.starts_with("/sub/"))
+        .collect();
+    let targets: Vec<&str> = media.iter().map(|s| s.target.as_str()).collect();
+    assert_eq!(
+        targets,
+        ["/media/broken.mp4", "/media/v.mp4", "/sub/zh.srt"]
+    );
+    // 媒体和字幕带源作 Referer、不带 cookie
+    for s in &media {
+        assert_eq!(s.cookie, None, "{s:?}");
+        assert_eq!(s.referer.as_deref(), Some(&format!("{}/", fake.web)[..]));
+    }
+}
+
+#[test]
+fn subtitles_keep_their_own_format_and_can_be_missing() {
+    let fake = Fake::start();
+    let got = run(&fake, &fake.note_url("efvtt"), Some(COOKIE), None);
+    let out = ok(&got);
+    let sub = out
+        .media
+        .iter()
+        .find(|m| m.kind == MediaKind::Subtitle)
+        .unwrap();
+    assert_eq!(
+        (sub.path.as_str(), sub.mime.as_deref()),
+        ("media/subtitle.zh-CN.vtt", Some("text/vtt"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(got.dir.path().join(sub.path.as_str())).unwrap(),
+        VTT
+    );
+    // WebVTT 来的不另存 .srt
+    assert!(!got.dir.path().join("media/subtitle.zh-CN.srt").exists());
+
+    // 页面给了字幕却没下到：算缺，写原因；视频照样交
+    let fake = Fake::start();
+    let got = run(&fake, &fake.note_url("efsubgone"), Some(COOKIE), None);
+    let out = ok(&got);
+    assert_eq!(out.completeness, Completeness::Partial);
+    assert_eq!(out.missing, [OutputKind::Subtitle]);
+    assert!(
+        out.missing_reason
+            .as_deref()
+            .unwrap()
+            .contains("字幕没有下载下来")
+    );
+    assert_eq!(out.media.len(), 1);
+
+    // 不要字幕就不去取
+    let fake = Fake::start();
+    let got = run(
+        &fake,
+        &fake.note_url("ef"),
+        Some(COOKIE),
+        Some(&[OutputKind::Video]),
+    );
+    assert_eq!(ok(&got).completeness, Completeness::Full);
+    assert!(fake.seen().iter().all(|s| !s.target.starts_with("/sub/")));
+}
+
+/// 旧脚本交来的链接没有 `xsec_source`：请求时补 `pc_user`；有的照原样带。
+#[test]
+fn xsec_source_is_kept_or_filled_in() {
+    let fake = Fake::start();
+    let old = format!(
+        "{}/user/profile/5b56be0014de415b2db830a6/{ID}?xsec_token=ok",
+        fake.web
+    );
+    // 假站点只认 explore、discovery/item 两种路径，user/profile 回 404；这里只看请求的地址
+    let _ = run(&fake, &old, Some(COOKIE), Some(&[OutputKind::Text]));
+    let explore = format!("{}/explore/{ID}?xsec_token=ok&xsec_source=", fake.web);
+    let got = run(&fake, &explore, Some(COOKIE), Some(&[OutputKind::Text]));
+    assert!(ok(&got).text.is_some());
+    let got = run(
+        &fake,
+        &fake.note_url("ok"),
+        Some(COOKIE),
+        Some(&[OutputKind::Text]),
+    );
+    assert!(ok(&got).text.is_some());
+    let targets: Vec<String> = fake.page_requests().into_iter().map(|s| s.target).collect();
+    assert_eq!(
+        targets,
+        [
+            format!(
+                "/user/profile/5b56be0014de415b2db830a6/{ID}?xsec_token=ok&xsec_source=pc_user"
+            ),
+            format!("/explore/{ID}?xsec_token=ok&xsec_source=pc_user"),
+            format!("/explore/{ID}?xsec_token=ok&xsec_source=pc_collect"),
+        ]
+    );
 }

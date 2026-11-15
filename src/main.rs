@@ -115,7 +115,7 @@ fn health(probe: bool) -> anyhow::Result<FetchHealth> {
             "probe",
             true,
             Some(
-                "没有发请求：笔记链接里的 xsec_token 几小时就失效，插件没有一篇长期可用的笔记拿来试"
+                "没有发请求：笔记链接里的 xsec_token 会失效（多久没有可靠的数），插件没有一篇长期可用的笔记拿来试"
                     .into(),
             ),
             &[],

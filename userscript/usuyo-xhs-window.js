@@ -3,14 +3,14 @@
 //
 // usuyo 开一个只给小红书用的窗口（自己一份网页数据，和你日常的浏览器分开），你在里面登录。这一段在那一页里跑：
 // 认出登录的是谁以后打开你自己的个人页，点「收藏」，usuyo 隔几秒叫它往下翻一屏（`usuyo.onStep`），
-// 收藏翻到底再点「赞过」接着翻；记下的笔记链接（带 xsec_token）一页页交给 usuyo（`usuyo.submit`），
+// 收藏翻到底再点「赞过」接着翻；记下的笔记链接（带 xsec_token、xsec_source）一页页交给 usuyo（`usuyo.submit`），
 // 你在 usuyo 的导入页确认了才会去取。碰到验证页、登录墙、认不出的回答就停下，说为什么；
 // 你在窗口上面点「继续」（`usuyo.onResume`）以后从停下的地方接着读，你自己点开的列表照你点的读。
 // 不对小红书发额外请求、不读 cookie、不写页面的存储，页面上不放任何东西；面板在 usuyo 窗口上面那一条里。
 (function (usuyo) {
   'use strict';
 
-  const VERSION = '0.4.0';
+  const VERSION = '0.4.1';
   const page = window;
   // 一回最多交这么多条（usuyo 那边一份报告最多收 200 条）
   const REPORT_LINKS = 100;
@@ -22,6 +22,8 @@
   // 点了标签这么久还没找到它：说找不到
   const TAB_WAIT_MS = 8000;
   const LABEL = { favorite: '收藏', like: '赞过' };
+  // 收藏、赞过页上笔记链接带的 xsec_source，取单条时和 xsec_token 一起带（照 xhs-vault 的 userscript/xhs-export.user.js:147）
+  const XSEC_SOURCE = 'pc_user';
   const ORDER = ['favorite', 'like'];
 
   const pending = [];
@@ -479,7 +481,10 @@
     noted(action, id, token, title) {
       if (seenIds[action][id]) return;
       seenIds[action][id] = true;
-      const link = { action, url: location.origin + '/explore/' + id + '?xsec_token=' + encodeURIComponent(token) };
+      const link = {
+        action,
+        url: location.origin + '/explore/' + id + '?xsec_token=' + encodeURIComponent(token) + '&xsec_source=' + XSEC_SOURCE,
+      };
       if (title) link.title = title;
       pending.push(link);
       dirty = true;

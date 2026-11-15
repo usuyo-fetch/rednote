@@ -77,7 +77,7 @@ impl<'s> Http<'s> {
         let allowed = match purpose {
             Purpose::Page { .. } => self.site.is_web(url),
             Purpose::Short => self.site.short_origin(url).is_some(),
-            Purpose::Image | Purpose::Video => self.site.is_media(url),
+            Purpose::Image | Purpose::Video | Purpose::Subtitle => self.site.is_media(url),
         };
         if !allowed || !self.site.may_request(url) {
             return Err(Error::Internal(format!(
@@ -95,12 +95,12 @@ impl<'s> Http<'s> {
         let accept = match purpose {
             Purpose::Page { .. } | Purpose::Short => ACCEPT_HTML,
             Purpose::Image => ACCEPT_IMAGE,
-            Purpose::Video => ACCEPT_MEDIA,
+            Purpose::Video | Purpose::Subtitle => ACCEPT_MEDIA,
         };
         let client = match purpose {
             Purpose::Page { .. } => &self.web,
             Purpose::Short => &self.short,
-            Purpose::Image | Purpose::Video => &self.media,
+            Purpose::Image | Purpose::Video | Purpose::Subtitle => &self.media,
         };
         let mut request = client
             .get(url)
@@ -113,7 +113,7 @@ impl<'s> Http<'s> {
                 request = request.cookie(c);
             }
             // 浏览器从笔记页取图时只带源，不带路径和 xsec_token
-            Purpose::Image | Purpose::Video => {
+            Purpose::Image | Purpose::Video | Purpose::Subtitle => {
                 let referer = self.site.web_origin().as_str().to_owned();
                 request = request.header("Referer", &referer);
             }
@@ -168,6 +168,8 @@ pub(crate) enum Purpose<'c> {
     Short,
     Image,
     Video,
+    /// 平台字幕，和图片视频一样走媒体主机、带 Referer。
+    Subtitle,
 }
 
 /// 响应头里的值。

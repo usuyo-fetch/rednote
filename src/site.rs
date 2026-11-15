@@ -34,7 +34,8 @@ impl Site {
             short: ["https://xhslink.com", "https://xhslink.cn"]
                 .map(|u| Url::parse(u).expect("constant URL"))
                 .to_vec(),
-            media: vec!["*.xhscdn.com".into()],
+            // `*.rednotecdn.com`：2026-10-27 起部分图片地址在 `sns-i27.rednotecdn.com` 上（ParseHub PR #198，MIT）
+            media: vec!["*.xhscdn.com".into(), "*.rednotecdn.com".into()],
             media_https: true,
             policy: Policy::from_host(),
         }
@@ -154,6 +155,13 @@ mod tests {
         assert!(!site.is_media(&u("https://www.xiaohongshu.com/a")));
         assert!(!site.is_media(&u("https://xhscdn.com/a")));
         assert!(!site.is_media(&u("https://evilxhscdn.com/a")));
+        assert!(site.is_media(&u(
+            "https://sns-i27.rednotecdn.com/notes_pre_post/x?imageView2/2/w/1080&sign=s"
+        )));
+        assert!(site.is_media(&u("https://sns-bak-v1.xhscdn.com/stream/v.mp4")));
+        assert!(!site.is_media(&u("https://rednotecdn.com/a")));
+        assert!(!site.is_media(&u("https://evilrednotecdn.com/a")));
+        assert!(!site.is_media(&u("https://www.rednote.com/a")));
         assert!(!site.may_request(&u("https://example.com/")));
         assert_eq!(
             site.media_url("http://sns-video-bd.xhscdn.com/v.mp4")

@@ -16,6 +16,12 @@ upstream:
   - name: XHS-Downloader（笔记页状态对象的字段名，只读它的源码，没有用它的代码）
     url: https://github.com/JoeanAmier/XHS-Downloader
     license: GPL-3.0
+  - name: MediaCrawler（视频分档不认档名的做法，只读它的源码，没有用它的代码）
+    url: https://github.com/NanmiCoder/MediaCrawler
+    license: NON-COMMERCIAL LEARNING LICENSE 1.1
+  - name: ParseHub（第一个请求就带访客身份的先后、新的图片主机，只读它的源码，没有用它的代码）
+    url: https://github.com/z-mio/ParseHub
+    license: MIT
 platforms: [rednote]
 match:
   - "www.xiaohongshu.com/explore/*"
@@ -33,7 +39,8 @@ sites:
     credential: browser-profile
     loginUrl: https://www.xiaohongshu.com/explore
     domains: [".xiaohongshu.com"]
-# 访客身份不是账号：usuyo 开一次首页、不登录，存下页面自己生成的 cookie，经 USUYO_VISITOR 交给笔记页请求。
+# 访客身份不是账号：usuyo 开一次首页、不登录，存下页面自己生成的 cookie，经 USUYO_VISITOR 交给笔记页请求；
+# 笔记页的第一个请求就带它，没交来时不发请求、回 visitor-required。
 visitors:
   - site: www.xiaohongshu.com
     name: 小红书
@@ -51,7 +58,7 @@ methods:
       source: {label: "XHS-Downloader #305", url: "https://github.com/JoeanAmier/XHS-Downloader/issues/305"}
     capabilities:
       fetch:
-        outputs: [text, images, media:video, meta]
+        outputs: [text, images, media:video, subtitle, meta]
   # 在 usuyo 的站点窗口里登录，脚本打开你的个人页、点「收藏」再点「赞过」，usuyo 隔几秒叫它往下翻一屏；
   # 只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题，交给 usuyo 落成导入，确认后由 note-page 去取。
   - id: in-usuyo
@@ -109,7 +116,7 @@ permissions:
     write: ["${OUT}"]
   network:
     mode: allowlist
-    hosts: ["www.xiaohongshu.com", "xhslink.com", "xhslink.cn", "*.xhscdn.com"]
+    hosts: ["www.xiaohongshu.com", "xhslink.com", "xhslink.cn", "*.xhscdn.com", "*.rednotecdn.com"]
   env: []
   devices: []
   gpu: false

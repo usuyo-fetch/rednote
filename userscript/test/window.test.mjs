@@ -182,7 +182,7 @@ test('reads favorites then likes page by page and says when the list ends', asyn
     links.map((l) => l.action),
     ['favorite', 'favorite', 'favorite', 'favorite', 'favorite', 'favorite', 'like', 'like'],
   );
-  for (const l of links) assert.match(l.url, /^https:\/\/www\.xiaohongshu\.com\/explore\/[0-9a-f]{24}\?xsec_token=XT\d+%2B%2F%3D$/);
+  for (const l of links) assert.match(l.url, /^https:\/\/www\.xiaohongshu\.com\/explore\/[0-9a-f]{24}\?xsec_token=XT\d+%2B%2F%3D&xsec_source=pc_user$/);
   assert.equal(links[0].title, '笔记 1');
   // 只有页面自己的请求：两个列表、每页一次
   assert.ok(s.fetched.every((u) => /\/api\/sns\/web\/v\d\/note\/(collect|like)\/page\?/.test(u)), s.fetched.join('\n'));

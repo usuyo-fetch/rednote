@@ -56,6 +56,11 @@ pub(crate) struct NoteLink {
 /// `shareRedId` 一类指向分享人的参数，不发出去。
 const PAGE_PARAMS: [&str; 2] = ["xsec_token", "xsec_source"];
 
+/// 链接带着 `xsec_token` 却没有 `xsec_source` 时补的值：清单来自收藏、赞过页，网页上那里的笔记链接
+/// 就是 `pc_user`（xhs-vault `userscript/xhs-export.user.js:147` 也这样配）；只带 token 的链接会被送去
+/// `/404/sec`（ParseHub #163）。旧版脚本交来的链接没有这一项。
+const DEFAULT_XSEC_SOURCE: &str = "pc_user";
+
 impl NoteLink {
     /// 要请求的地址：笔记页的源（scheme 也用源的），原来的路径，只留 [`PAGE_PARAMS`]。
     pub fn page_url(&self, site: &Site) -> Url {
@@ -63,23 +68,50 @@ impl NoteLink {
     }
 
     pub fn xsec_token(&self) -> Option<String> {
-        self.url
-            .query_pairs()
-            .find(|(k, _)| k == "xsec_token")
-            .map(|(_, v)| v.into_owned())
-            .filter(|v| !v.trim().is_empty())
+        param(&self.url, "xsec_token")
+    }
+
+    /// 跟同一篇笔记的重定向时要请求的地址：去处没写 `xsec_source` 时沿用原链接的，
+    /// 原链接也没有才补 [`DEFAULT_XSEC_SOURCE`]。
+    pub fn redirect_url(&self, site: &Site, next: &Url) -> Url {
+        let mut next = next.clone();
+        if param(&next, "xsec_source").is_none()
+            && let Some(source) = param(&self.url, "xsec_source")
+        {
+            let kept: Vec<(String, String)> = next
+                .query_pairs()
+                .filter(|(k, _)| k != "xsec_source")
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .chain([("xsec_source".to_owned(), source)])
+                .collect();
+            next.query_pairs_mut().clear().extend_pairs(kept);
+        }
+        page_url(site, &next)
     }
 }
 
-/// 笔记页主机上的一个地址，换到源的 scheme 上，只留 [`PAGE_PARAMS`]。
+/// 查询串里一个不是空的参数。
+fn param(url: &Url, name: &str) -> Option<String> {
+    url.query_pairs()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.into_owned())
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// 笔记页主机上的一个地址，换到源的 scheme 上，只留 [`PAGE_PARAMS`]；有 `xsec_token`、
+/// 没有（或是空的）`xsec_source` 时补上 [`DEFAULT_XSEC_SOURCE`]。
 pub(crate) fn page_url(site: &Site, url: &Url) -> Url {
     let mut target = site.web_origin().clone();
     target.set_path(url.path());
-    let kept: Vec<(String, String)> = url
+    let mut kept: Vec<(String, String)> = url
         .query_pairs()
-        .filter(|(k, _)| PAGE_PARAMS.contains(&k.as_ref()))
+        .filter(|(k, v)| PAGE_PARAMS.contains(&k.as_ref()) && !v.trim().is_empty())
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
+    let has = |name: &str| kept.iter().any(|(k, _)| k == name);
+    if has("xsec_token") && !has("xsec_source") {
+        kept.push(("xsec_source".into(), DEFAULT_XSEC_SOURCE.into()));
+    }
     if !kept.is_empty() {
         target.query_pairs_mut().extend_pairs(kept);
     }
@@ -279,6 +311,32 @@ mod tests {
                 "https://www.xiaohongshu.com/discovery/item/{ID}?xsec_token=AB%3D&xsec_source=app_share"
             )
         );
+    }
+
+    #[test]
+    fn page_requests_keep_or_fill_xsec_source() {
+        let site = Site::xiaohongshu();
+        let page = |query: &str| {
+            let Some(Link::Note(n)) = classify(
+                &site,
+                &format!("https://www.xiaohongshu.com/user/profile/u/{ID}?{query}"),
+            ) else {
+                panic!()
+            };
+            n.page_url(&site).query().unwrap_or_default().to_owned()
+        };
+        assert_eq!(
+            page("xsec_source=pc_feed&xsec_token=T"),
+            "xsec_source=pc_feed&xsec_token=T"
+        );
+        // 旧链接没有 xsec_source、或是空的：补 pc_user
+        assert_eq!(page("xsec_token=T"), "xsec_token=T&xsec_source=pc_user");
+        assert_eq!(
+            page("xsec_token=T&xsec_source="),
+            "xsec_token=T&xsec_source=pc_user"
+        );
+        // 没有 token 时什么都不补（这种链接 fetch 不去请求）
+        assert_eq!(page("a=1"), "");
     }
 
     #[test]

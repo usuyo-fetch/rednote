@@ -6,8 +6,9 @@
 //! - 字段名 `noteId`、`type`（`normal` / `video`）、`title`、`desc`、`time`（毫秒）、
 //!   `user.{userId,nickname}`、`tagList[].name`、`interactInfo.*Count`、
 //!   `imageList[].{urlDefault,url,infoList,livePhoto,stream}`、
-//!   `video.media.stream.{h264,h265,av1,h266}[].{masterUrl,backupUrls,height}`
-//!   （xpzouying/xiaohongshu-mcp `types.go`、XHS-Downloader `image.py` `video.py`）；
+//!   `video.media.stream.<档名>[].{masterUrl,backupUrls,width,height,format,videoCodec}`
+//!   （xpzouying/xiaohongshu-mcp `types.go`、XHS-Downloader `image.py` `video.py`、
+//!   yt-dlp `extractor/xiaohongshu.py`），`video.media.video.subtitles`（xhs-vault）；
 //! - 状态对象不是 JSON：值的位置会出现 `undefined`，还有 `new Map([...])`、`new Set([...])`，
 //!   后者 2026-10-15 前后出现（XHS-Downloader #497）。
 
@@ -199,6 +200,14 @@ pub struct Stream {
     pub duration_ms: Option<u64>,
 }
 
+/// 平台给的一份字幕；地址带 `sign`、`t`，要在取页面的同一次调用里下载。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Subtitle {
+    pub url: String,
+    /// 语言，例如 `zh-CN`；原声那一份（`source`）或认不出时是 `None`。
+    pub lang: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {
     pub id: String,
@@ -214,6 +223,8 @@ pub struct Note {
     pub images: Vec<Image>,
     /// 视频笔记的视频流；视频笔记却没有流时是 `None`。
     pub video: Option<Stream>,
+    /// 视频笔记的平台字幕。
+    pub subtitle: Option<Subtitle>,
     /// 页面里这篇笔记的原样对象，随快照存下，以后改进解析可以重算。
     pub raw: Value,
 }
@@ -296,6 +307,7 @@ pub fn note(state: &Value, id: &str) -> Result<Note, StateError> {
         counts,
         images,
         video,
+        subtitle: (kind == NoteKind::Video).then(|| subtitle(raw)).flatten(),
         raw: raw.clone(),
     })
 }
@@ -342,38 +354,115 @@ fn image(v: &Value) -> Image {
 /// 每一路最多留几个备用地址：页面给上千个也不会变成上千个请求。
 const MAX_BACKUPS: usize = 3;
 
-/// 先 h264（哪里都能放），再 h265、av1、h266；同一编码里取最高的那一路。
+/// 默认取的那一档短边不超过这么多像素（竖屏看宽、横屏看高）：先取到内容，不追最高画质。
+/// 页面给的 1080p 及以上的档（`originVideoKey` 原片 2026-01 起不给了）算试验性，默认不挑；
+/// 要放开时改这个数。
+const PREFERRED_SHORT_SIDE: u64 = 720;
+
+/// `stream` 下每一档都当候选，不认档名：档名从 `h264`、`h265`、`av1` 换成过 `EF4`–`EF7`
+/// （照 MediaCrawler `media_platform/xhs/media.py:61-75` 的做法，非商用学习许可，没有用它的代码）。
+/// 先挑能直接播放的：`format` 是 mp4（没写也算）、编码是 h264；再 mp4 的别的编码；最后别的。
+/// 同一级里取短边不超过 [`PREFERRED_SHORT_SIDE`] 的最大那一档，都超过就取最小的。
 fn best_stream(streams: &Value) -> Option<Stream> {
-    ["h264", "h265", "av1", "h266"]
-        .into_iter()
-        .find_map(|codec| {
-            let list = streams.get(codec)?.as_array()?;
-            list.iter()
-                .filter_map(|s| {
-                    let backup: Vec<String> = s
-                        .get("backupUrls")
-                        .and_then(Value::as_array)
-                        .map(|b| {
-                            b.iter()
-                                .filter_map(|u| u.as_str().map(str::to_owned))
-                                .take(MAX_BACKUPS)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let url = text(s, "masterUrl")
-                        .filter(|u| !u.is_empty())
-                        .or_else(|| backup.first().cloned())?;
-                    Some(Stream {
-                        url,
-                        backup,
-                        codec: codec.into(),
-                        width: s.get("width").and_then(Value::as_u64),
-                        height: s.get("height").and_then(Value::as_u64),
-                        duration_ms: s.get("duration").and_then(Value::as_u64),
-                    })
-                })
-                .max_by_key(|s| s.height.unwrap_or(0))
+    let buckets = streams.as_object()?;
+    buckets
+        .iter()
+        .filter_map(|(bucket, list)| Some((bucket, list.as_array()?)))
+        .flat_map(|(bucket, list)| list.iter().filter_map(move |s| stream(bucket, s)))
+        .max_by_key(|(s, format)| {
+            let codec = s.codec.to_ascii_lowercase();
+            let mp4 = format
+                .as_deref()
+                .is_none_or(|f| f.eq_ignore_ascii_case("mp4"));
+            let playable = match (mp4, matches!(codec.as_str(), "h264" | "avc" | "avc1")) {
+                (true, true) => 2,
+                (true, false) => 1,
+                (false, _) => 0,
+            };
+            let short = match (s.width, s.height) {
+                (Some(w), Some(h)) => w.min(h),
+                (w, h) => w.or(h).unwrap_or(0),
+            };
+            // 不超过的越大越好，都排在超过的前面；超过的越小越好
+            let size = if short <= PREFERRED_SHORT_SIDE {
+                (1, short)
+            } else {
+                (0, u64::MAX - short)
+            };
+            (playable, size)
         })
+        .map(|(s, _)| s)
+}
+
+/// 一档；返回 `format` 一起用来挑。编码取 `videoCodec`，没写时用档名。
+fn stream(bucket: &str, s: &Value) -> Option<(Stream, Option<String>)> {
+    let backup: Vec<String> = s
+        .get("backupUrls")
+        .and_then(Value::as_array)
+        .map(|b| {
+            b.iter()
+                .filter_map(|u| u.as_str().map(str::to_owned))
+                .filter(|u| !u.is_empty())
+                .take(MAX_BACKUPS)
+                .collect()
+        })
+        .unwrap_or_default();
+    let url = text(s, "masterUrl")
+        .filter(|u| !u.is_empty())
+        .or_else(|| backup.first().cloned())?;
+    Some((
+        Stream {
+            url,
+            backup,
+            codec: text(s, "videoCodec")
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(|| bucket.to_owned()),
+            width: s.get("width").and_then(Value::as_u64),
+            height: s.get("height").and_then(Value::as_u64),
+            duration_ms: s.get("duration").and_then(Value::as_u64),
+        },
+        text(s, "format"),
+    ))
+}
+
+/// 平台自带的字幕：`video.media.video.subtitles`，按 `source`、`zh-CN`、`en-US` 的先后挑一份
+/// （字段位置和先后照 xhs-vault `scraper/build_corpus.py:39-71`，MIT，没有用它的代码）。
+/// 形状有两种：`{"zh-CN": [{"url": …}], …}`，或 `[{"url": …, "language": …}]`。
+fn subtitle(raw: &Value) -> Option<Subtitle> {
+    let subs = raw.pointer("/video/media/video/subtitles")?;
+    let url_of = |v: &Value| {
+        let first = v.as_array().and_then(|a| a.first()).unwrap_or(v);
+        text(first, "url")
+            .or_else(|| text(first, "subtitleUrl"))
+            .filter(|u| !u.trim().is_empty())
+    };
+    let found: Vec<(String, String)> = match subs {
+        Value::Object(map) => map
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), url_of(v)?)))
+            .collect(),
+        Value::Array(list) => list
+            .iter()
+            .filter_map(|s| {
+                let key = text(s, "language").or_else(|| text(s, "lang"))?;
+                Some((key, url_of(s)?))
+            })
+            .collect(),
+        _ => return None,
+    };
+    let (key, url) = ["source", "zh-CN", "en-US"]
+        .iter()
+        .find_map(|want| found.iter().find(|(k, _)| k == want))
+        .or_else(|| found.first())?
+        .clone();
+    Some(Subtitle {
+        url,
+        // `source` 是原声那一份，不是语言名
+        lang: (key != "source"
+            && key.len() <= 16
+            && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .then_some(key),
+    })
 }
 
 #[cfg(test)]
@@ -523,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn prefers_h264_and_the_tallest_stream() {
+    fn prefers_h264_up_to_the_preferred_size() {
         let streams: Value = serde_json::from_str(
             r#"{"h265":[{"masterUrl":"h265","height":1080}],
                 "h264":[{"masterUrl":"low","height":480},{"masterUrl":"","backupUrls":["high-b"],"height":720}]}"#,
@@ -535,5 +624,87 @@ mod tests {
             serde_json::from_str(r#"{"h264":[],"h265":[{"masterUrl":"h"}]}"#).unwrap();
         assert_eq!(best_stream(&only_h265).unwrap().codec, "h265");
         assert!(best_stream(&serde_json::json!({"h264": []})).is_none());
+    }
+
+    /// 档名不是编码名（`EF4`…）时照样挑：看 `format`、`videoCodec` 和短边。
+    #[test]
+    fn picks_from_any_bucket_name() {
+        let streams: Value = serde_json::from_str(
+            r#"{"EF4":[{"masterUrl":"ef4-h265","format":"mp4","videoCodec":"h265","width":720,"height":1280}],
+                "EF5":[{"masterUrl":"ef5-1080","format":"mp4","videoCodec":"h264","width":1080,"height":1920},
+                       {"masterUrl":"","backupUrls":["","ef5-720-b"],"format":"mp4","videoCodec":"h264","width":720,"height":1280}],
+                "EF6":[{"masterUrl":"ef6-hls","format":"m3u8","videoCodec":"h264","width":480,"height":854}],
+                "EF7":"not a list"}"#,
+        )
+        .unwrap();
+        let s = best_stream(&streams).unwrap();
+        // 能直接播的 h264 mp4 里短边不超过 720 的那一档；主地址空就用第一个不空的备用地址
+        assert_eq!((s.url.as_str(), s.codec.as_str()), ("ef5-720-b", "h264"));
+        assert_eq!(s.backup, ["ef5-720-b"]);
+
+        // 上限两侧：只有短边超过的时取最小的
+        let over: Value = serde_json::from_str(
+            r#"{"EF5":[{"masterUrl":"2160","videoCodec":"h264","width":2160,"height":3840},
+                       {"masterUrl":"1080","videoCodec":"h264","width":1080,"height":1920}]}"#,
+        )
+        .unwrap();
+        assert_eq!(best_stream(&over).unwrap().url, "1080");
+        let at: Value = serde_json::from_str(
+            r#"{"EF5":[{"masterUrl":"721","videoCodec":"h264","width":721,"height":1280},
+                       {"masterUrl":"720","videoCodec":"h264","width":720,"height":1280},
+                       {"masterUrl":"480","videoCodec":"h264","width":480,"height":854}]}"#,
+        )
+        .unwrap();
+        assert_eq!(best_stream(&at).unwrap().url, "720");
+
+        // 不知道格式和编码的也是候选，排在 h264 mp4 后面
+        let unknown: Value =
+            serde_json::from_str(r#"{"EF9":[{"masterUrl":"bare","height":720}]}"#).unwrap();
+        assert_eq!((best_stream(&unknown).unwrap().codec.as_str()), "EF9");
+        let mixed: Value = serde_json::from_str(
+            r#"{"EF9":[{"masterUrl":"bare","height":720}],"EF4":[{"masterUrl":"known","videoCodec":"h264","height":480}]}"#,
+        )
+        .unwrap();
+        assert_eq!(best_stream(&mixed).unwrap().url, "known");
+        // 不是 mp4 的排在最后
+        let hls: Value = serde_json::from_str(
+            r#"{"EF6":[{"masterUrl":"hls","format":"m3u8","videoCodec":"h264"}],"EF4":[{"masterUrl":"h265","format":"mp4","videoCodec":"h265"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(best_stream(&hls).unwrap().url, "h265");
+    }
+
+    #[test]
+    fn platform_subtitles() {
+        let with = |subs: Value| {
+            let mut v = minimal();
+            v["type"] = "video".into();
+            v["video"] = serde_json::json!({"media": {"video": {"subtitles": subs}, "stream": {}}});
+            note(&state_with(v), ID).unwrap().subtitle
+        };
+        let by_lang = with(serde_json::json!({
+            "en-US": [{"url": "en"}],
+            "zh-CN": [{"url": "zh"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            (by_lang.url.as_str(), by_lang.lang.as_deref()),
+            ("zh", Some("zh-CN"))
+        );
+        let source =
+            with(serde_json::json!({"zh-CN": [{"url": "zh"}], "source": [{"url": "src"}]}))
+                .unwrap();
+        assert_eq!((source.url.as_str(), source.lang), ("src", None));
+        let listed = with(serde_json::json!([{"language": "en-US", "url": "en"}])).unwrap();
+        assert_eq!(listed.lang.as_deref(), Some("en-US"));
+        let odd = with(serde_json::json!({"x/../y": [{"url": "u"}]})).unwrap();
+        assert_eq!(odd.lang, None);
+        assert!(with(serde_json::json!({"zh-CN": [{"url": ""}]})).is_none());
+        assert!(with(serde_json::json!({})).is_none());
+        // 图文笔记不看
+        let mut n = minimal();
+        n["video"] =
+            serde_json::json!({"media": {"video": {"subtitles": {"zh-CN": [{"url": "zh"}]}}}});
+        assert!(note(&state_with(n), ID).unwrap().subtitle.is_none());
     }
 }
