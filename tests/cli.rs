@@ -169,14 +169,7 @@ fn health_answers_without_requests() {
     assert_eq!(value["ready"], true);
     assert_eq!(value["protocol"], 1);
     assert_eq!(value["version"], m.header.version.to_string());
-    // 只有 xhs-downloader 的检查（本机服务、令牌），而且只挡那一种方法：没有设置时它们不通过，整个插件仍然可用
-    let checks = value["checks"].as_array().unwrap();
-    assert!(!checks.is_empty());
-    assert!(
-        checks
-            .iter()
-            .all(|c| c["methods"] == serde_json::json!(["xhs-downloader"]))
-    );
+    assert!(value["checks"].as_array().is_none_or(Vec::is_empty));
 
     let value = envelope(&plugin(&["health", "--probe"], None));
     assert_eq!(value["ready"], true);
@@ -251,7 +244,7 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     assert!(found.rejected.is_empty(), "{:?}", found.rejected);
     assert_eq!(found.fetch.len(), 1);
     // 访客身份写在 `visitors` 里、只给笔记页那种方法；账号站点只有站点窗口那一份网页数据（`browser-profile`），
-    // 只给「在 usuyo 中登录并读取」；设置另列
+    // 只给「在 usuyo 中登录并读取」
     let spec = &found.fetch[0].spec;
     assert_eq!(spec.sites.len(), 1);
     assert_eq!(spec.sites[0].site, "www.xiaohongshu.com");
@@ -260,32 +253,14 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
         usuyo_plugin::protocol::Credential::BrowserProfile
     );
     assert_eq!(spec.visitors[0].site, "www.xiaohongshu.com");
-    // routes.md 第 3 节的每一行，加上 mediacrawler；做了的是笔记页、站点窗口、浏览器脚本、XHS-Downloader 和读 MediaCrawler 文件
+    // routes.md 第 3 节的每一行；做了的是笔记页、站点窗口、浏览器脚本
     let ids: Vec<&str> = spec.methods.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(
         ids,
-        [
-            "note-page",
-            "in-usuyo",
-            "userscript",
-            "iphone",
-            "android",
-            "xhs-downloader",
-            "rsshub",
-            "mediacrawler"
-        ]
+        ["note-page", "in-usuyo", "userscript", "iphone", "android"]
     );
     let built: Vec<&str> = spec.built().map(|m| m.id.as_str()).collect();
-    assert_eq!(
-        built,
-        [
-            "note-page",
-            "in-usuyo",
-            "userscript",
-            "xhs-downloader",
-            "mediacrawler"
-        ]
-    );
+    assert_eq!(built, ["note-page", "in-usuyo", "userscript"]);
     let note = spec.method("note-page").unwrap();
     assert_eq!(note.visitors, ["www.xiaohongshu.com"]);
     assert!(note.sites.is_empty() && note.capabilities.fetch.is_some());
@@ -305,14 +280,7 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
             .unwrap()
         )
     );
-    // 设置只有 xhs-downloader 方法用：本机服务地址和访问令牌（密钥）
-    let settings: Vec<(&str, bool)> = found.fetch[0]
-        .header
-        .settings
-        .iter()
-        .map(|s| (s.key.as_str(), s.secret))
-        .collect();
-    assert_eq!(settings, [("endpoint", false), ("xhs-token", true)]);
+    assert!(found.fetch[0].header.settings.is_empty());
     let host = usuyo_plugin::PluginHost::new(
         usuyo_plugin::HostConfig {
             work_dir: tmp.path().join("work"),

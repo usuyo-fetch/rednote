@@ -113,10 +113,10 @@ pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
     )
 }
 
-/// 取到的一篇笔记；`status` 是笔记页的 HTTP 状态，经 XHS-Downloader 取时没有。
+/// 取到的一篇笔记；`status` 是笔记页的 HTTP 状态。
 pub(crate) struct Page {
     pub note: Note,
-    pub status: Option<u16>,
+    pub status: u16,
 }
 
 /// 请求一次笔记页（加上最多几跳指向同一篇笔记的重定向），认出拿到的是什么。
@@ -174,10 +174,7 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: Option<&Cookie>) -> Resul
             }
             let parsed = state::extract(&text)?;
             match state::note(&parsed, &note.id) {
-                Ok(n) => Ok(Page {
-                    note: n,
-                    status: Some(status),
-                }),
+                Ok(n) => Ok(Page { note: n, status }),
                 // 页面结构在、这篇的内容没给：和被送回首页一样，是要访客 cookie 的样子
                 Err(StateError::Absent(id)) => Err(Error::VisitorRequired {
                     at: format!("a page without content for note {id}"),
@@ -492,7 +489,7 @@ pub(crate) fn write_note(
             access: Access::PublicWeb,
             site: None,
             upstream: None,
-            status: page.status,
+            status: Some(page.status),
         },
         credentials_update: None,
     })

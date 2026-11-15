@@ -34,8 +34,7 @@ impl Site {
             short: ["https://xhslink.com", "https://xhslink.cn"]
                 .map(|u| Url::parse(u).expect("constant URL"))
                 .to_vec(),
-            // `ci.xiaohongshu.com`：XHS-Downloader 默认的图片格式（JPEG）给的是这台主机上的地址
-            media: vec!["*.xhscdn.com".into(), "ci.xiaohongshu.com".into()],
+            media: vec!["*.xhscdn.com".into()],
             media_https: true,
             policy: Policy::from_host(),
         }
@@ -151,7 +150,7 @@ mod tests {
         assert!(!site.is_web(&u("https://xiaohongshu.com/explore/x")));
         assert!(site.short_origin(&u("http://xhslink.com/a/b")).is_some());
         assert!(site.is_media(&u("https://sns-webpic-qc.xhscdn.com/a")));
-        assert!(site.is_media(&u("https://ci.xiaohongshu.com/a?imageView2/format/jpeg")));
+        assert!(!site.is_media(&u("https://ci.xiaohongshu.com/a")));
         assert!(!site.is_media(&u("https://www.xiaohongshu.com/a")));
         assert!(!site.is_media(&u("https://xhscdn.com/a")));
         assert!(!site.is_media(&u("https://evilxhscdn.com/a")));
