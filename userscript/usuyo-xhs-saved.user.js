@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         usuyo：交出小红书的收藏和赞过
-// @namespace    usuyo-fetch/xiaohongshu
-// @version      0.3.0
+// @namespace    usuyo-fetch/rednote
+// @version      0.4.0
 // @description  在你自己的「收藏」「赞过」页上，只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题；点「交给 usuyo」时先确认本机 127.0.0.1:47615 上的是 usuyo，再把清单交过去，你在 usuyo 的导入页确认。没记到东西时，面板上的「复制诊断」会把回答的结构（字段名、类型、长度，不含任何内容）复制给你，由你自己决定给不给我们。不对小红书发额外请求、不自动滚动、不读 cookie，除了本机的 usuyo 不往别处发。
 // @match        https://www.xiaohongshu.com/*
 // @run-at       document-start
@@ -16,6 +16,8 @@
 // ==/UserScript==
 
 /*
+ * 这个文件由 build.mjs 照 src/manager.js 和 src/core.js 生成，改那两个文件再跑 `node userscript/build.mjs`。
+ *
  * 改写自 wkwunju/xhs-vault 的 userscript/xhs-export.user.js（MIT）：
  * 留下了「截获页面自己发出的列表请求」这一做法；去掉了自动滚动、导出 cookies.json、
  * 写页面 localStorage。交给 usuyo 走它的投递接口（usuyo 插件协议 §5.1）：
@@ -58,14 +60,10 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
   const page = unsafeWindow;
   // xsec_token 只在几小时内有效，记下超过这个时间的条目不再交
   const KEEP_MS = 12 * 60 * 60 * 1000;
-  // 收藏页、赞过页自己请求的列表（OpenCLI 的 collection-helpers.js 记的接口名）
-  const ENDPOINT = /\/api\/sns\/web\/v\d+\/note\/(collect|like)\/page(?:[?#]|$)/;
-  // 名字像收藏、赞过的接口（改了名也能进诊断）；认得的只有上面那两个
-  const LIKELY = /\/api\/sns\/web\/[^?#]*(?:collect|like|fav)[^?#]*$/i;
   const LABEL = { favorite: '收藏', like: '赞过' };
   // usuyo 的本机端口。测试载入源码时把这一行换成别的端口；用户这边没有设置项。
   const PORT = 47615;
@@ -86,8 +84,6 @@
   const sign = subtle.sign.bind(subtle);
   const getRandomValues = crypto.getRandomValues.bind(crypto);
   const nativePrompt = page.prompt;
-  // 脚本跑起来时页面的载入状态；注入得晚的话这里不是 loading
-  const STARTED_AS = typeof document === 'undefined' ? 'unknown' : String(document.readyState || 'unknown');
   const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard;
   const attachShadow = Element.prototype.attachShadow;
   // 字符 → 字节，只收令牌里会出现的字符；没有原型，查表不经过任何方法
@@ -132,6 +128,48 @@
   function count(action) {
     return Object.keys(store[action]).length;
   }
+
+  // ---------- 核心（src/core.js）：只看页面自己请求回来的列表 ----------
+
+  /** 核心认出一条：记进脚本管理器的存储。 */
+  function noted(action, id, token, title) {
+    store[action][id] = { token, title, seenAt: Date.now() };
+  }
+
+  /** 核心认完一个列表回答。 */
+  function listed(action, hasMore) {
+    if (hasMore !== null) status[action].hasMore = hasMore;
+    status.notice = '';
+    status.warning = '';
+    saveStore();
+    render();
+  }
+
+  /** 页面拿到的回答叫停：照实说出来，让你停手。 */
+  function stopped(word, detail) {
+    if (word === 'errorCode') status.warning = '小红书回了 code ' + detail + '，先别往下翻了';
+    else status.notice = word === 'notYours' ? '这不是你自己的列表，没有记' : '没认出登录的账号，没有记';
+    render();
+  }
+
+  const core = (
+// 两个壳共用的核心：只看页面自己请求回来的「收藏」「赞过」列表，认出笔记 id、xsec_token 和标题，
+// 一条条交给壳（`host.noted`）；记下回答的形状给「复制诊断」。不发请求、不读 cookie、不写页面的存储。
+// build.mjs 把这一段原样放进 usuyo-xhs-saved.user.js（脚本管理器）和 usuyo-xhs-window.js（usuyo 的站点窗口）。
+//
+// host：page（页面的 window）；noted(action, id, token, title)；listed(action, hasMore)；
+// stopped(word, detail)：页面拿到的回答叫停（errorCode、notYours、noAccount）；
+// seen(path, outcome)：看过一个回答（认没认出都叫）。
+(function (host) {
+  'use strict';
+
+  const page = host.page;
+  // 收藏页、赞过页自己请求的列表（OpenCLI 的 collection-helpers.js 记的接口名）
+  const ENDPOINT = /\/api\/sns\/web\/v\d+\/note\/(collect|like)\/page(?:[?#]|$)/;
+  // 名字像收藏、赞过的接口（改了名也能进诊断）；认得的只有上面那两个
+  const LIKELY = /\/api\/sns\/web\/[^?#]*(?:collect|like|fav)[^?#]*$/i;
+  // 脚本跑起来时页面的载入状态；注入得晚的话这里不是 loading
+  const STARTED_AS = typeof document === 'undefined' ? 'unknown' : String(document.readyState || 'unknown');
 
   // ---------- 诊断：只记回答的形状，不记任何值 ----------
   // 下面这一段（到「诊断结束」）在三个 usuyo-fetch 油猴脚本里逐字相同，形状归约照
@@ -427,14 +465,13 @@
     }
   }
 
-  /** 认得就记下，回一份「认出了吗、收了几条、按什么跳过」给诊断。 */
+  /** 认得就交给壳，回一份「认出了吗、收了几条、按什么跳过」给诊断。 */
   function absorb(rawUrl, json) {
     const action = actionOf(rawUrl);
     if (!action || !json || typeof json !== 'object') return NOT_RECOGNISED;
     if (json.code !== 0) {
       // 掉线或风控时页面自己拿到的就是这些码；照实说出来，让你停手
-      status.warning = '小红书回了 code ' + String(json.code).slice(0, 12) + '，先别往下翻了';
-      render();
+      host.stopped('errorCode', String(json.code).slice(0, 12));
       return { recognised: false, took: 0, skipped: {}, stopped: 'errorCode' };
     }
     const data = json.data || {};
@@ -448,12 +485,9 @@
     }
     const me = ownUserId();
     if (!me || listOwner !== me) {
-      status.notice = me ? '这不是你自己的列表，没有记' : '没认出登录的账号，没有记';
-      render();
+      host.stopped(me ? 'notYours' : 'noAccount', '');
       return { recognised: notes !== null, took: 0, skipped: {}, stopped: me ? 'notYours' : 'noAccount' };
     }
-    if ('has_more' in data) status[action].hasMore = data.has_more;
-    const now = Date.now();
     let took = 0;
     const skipped = { noId: 0, noToken: 0 };
     for (const n of notes || []) {
@@ -465,13 +499,10 @@
         continue;
       }
       const title = String(card.display_title || card.displayTitle || card.title || '').slice(0, 200);
-      store[action][id.toLowerCase()] = { token, title, seenAt: now };
+      host.noted(action, id.toLowerCase(), token, title);
       took++;
     }
-    status.notice = '';
-    status.warning = '';
-    saveStore();
-    render();
+    host.listed(action, 'has_more' in data ? data.has_more : null);
     return { recognised: notes !== null, took, skipped, stopped: '' };
   }
 
@@ -485,7 +516,9 @@
         outcome = { recognised: false, took: 0, skipped: {}, stopped: 'failed' };
       }
     }
-    logAnswer(diagPath(rawUrl), httpStatus, answer.json, answer.shape, outcome);
+    const path = diagPath(rawUrl);
+    logAnswer(path, httpStatus, answer.json, answer.shape, outcome);
+    host.seen(path, outcome);
   }
 
   // fetch：拿响应的副本读，原响应原样交回页面
@@ -537,6 +570,17 @@
     }
     return originalSend.apply(this, arguments);
   };
+
+  return Object.freeze({
+    ownUserId,
+    startedAs: STARTED_AS,
+    /** 计数：经过脚本的请求、看过的、认出的回答。 */
+    stats: () => ({ requests: answerStats.requests, looked: answerStats.looked, recognised: answerStats.recognised }),
+    /** 只有形状的诊断（壳再加上自己的名字、版本、页面种类）。 */
+    report: answerReport,
+  });
+})
+  )({ page, noted, listed, stopped, seen: () => {} });
 
   // ---------- 交给 usuyo ----------
 
@@ -792,7 +836,7 @@
   }
 
   function diagnosis() {
-    return Object.assign({ tool: 'usuyo-xhs-saved', version: VERSION, page: pageKind(), startedAs: STARTED_AS }, answerReport());
+    return Object.assign({ tool: 'usuyo-xhs-saved', version: VERSION, page: pageKind(), startedAs: core.startedAs }, core.report());
   }
 
   function copyDiagnosis() {
@@ -902,7 +946,7 @@
     const onSaved = onProfile();
     if (!onSaved) savedSince = 0;
     else if (!savedSince) savedSince = Date.now();
-    const quiet = onSaved && Date.now() - savedSince > QUIET_MS && answerStats.recognised === 0;
+    const quiet = onSaved && Date.now() - savedSince > QUIET_MS && core.stats().recognised === 0;
     ui.note.textContent = status.notice || (quiet ? QUIET_NOTE : '自己往下翻，翻到的会记下来');
     const token = storedToken();
     ui.key.style.display = token ? '' : 'none';

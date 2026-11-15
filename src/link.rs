@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::http::{self, Http, Purpose};
 use crate::site::{CANONICAL_ORIGIN, Site};
 
-pub const PLATFORM: &str = "xiaohongshu";
+pub const PLATFORM: &str = "rednote";
 const SHORT_HOPS: usize = 5;
 const SHORT_TIMEOUT: Duration = Duration::from_secs(8);
 

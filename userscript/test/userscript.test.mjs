@@ -9,6 +9,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { load, startSite, startListener, note, until, SCRIPT_FRAME } from './harness.mjs';
+import { build } from '../build.mjs';
 
 const BIN = process.env.USUYO_BIN;
 const PORT = Number(process.env.USUYO_TEST_PORT || 47702);
@@ -621,8 +622,8 @@ test('a quiet page says so once, calmly, and only until a list answer is recogni
 });
 
 test('the version is bumped and the diagnosis code is the same in all three scripts', () => {
-  assert.match(SCRIPT_TEXT, /^\/\/ @version      0\.3\.0$/m);
-  assert.ok(SCRIPT_TEXT.includes("const VERSION = '0.3.0';"));
+  assert.match(SCRIPT_TEXT, /^\/\/ @version      0\.4\.0$/m);
+  assert.ok(SCRIPT_TEXT.includes("const VERSION = '0.4.0';"));
   for (const sibling of ['../../../x/userscript/usuyo-x-saved.user.js', '../../../bilibili/userscript/usuyo-bilibili-saved.user.js']) {
     const url = new URL(sibling, import.meta.url);
     assert.ok(existsSync(url), 'sibling script is expected at ' + url.pathname);
@@ -651,4 +652,14 @@ test('a protocol-relative address loses its host and merges with the full one', 
   await wait();
   const d = JSON.parse(await copyOut(s));
   assert.deepEqual(d.answers.map((a) => [a.path, a.answers]), [['/api/sns/web/v2/note/collect/page', 2]]);
+});
+
+test('both shells are built from the one core and the built files are up to date', () => {
+  const built = build();
+  const core = readFileSync(new URL('../src/core.js', import.meta.url), 'utf8').trimEnd();
+  for (const [name, text] of Object.entries(built)) {
+    assert.equal(readFileSync(new URL('../' + name, import.meta.url), 'utf8'), text, name + ' is stale: run node userscript/build.mjs');
+    assert.ok(text.includes(core), name + ' holds the core as it is');
+    assert.equal(diagBlock(text), diagBlock(SCRIPT_TEXT), name + ' has the same diagnosis code');
+  }
 });

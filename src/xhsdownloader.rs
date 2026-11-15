@@ -50,7 +50,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// 一篇笔记的回答远小于这个数。
 const ANSWER_BYTES: u64 = 8 << 20;
 const SETTINGS_BYTES: u64 = 1 << 20;
-const USER_AGENT: &str = "usuyo-fetch-xiaohongshu";
+const USER_AGENT: &str = "usuyo-fetch-rednote";
 
 /// 本机的 XHS-Downloader：服务地址和访问令牌。
 pub struct Service {

@@ -8,8 +8,8 @@ use std::path::Path;
 
 use common::{COOKIE, Fake, ID, JPEG, MP4, WEBP};
 use tempfile::TempDir;
-use usuyo_fetch_xiaohongshu::fetch::{self, Request};
-use usuyo_fetch_xiaohongshu::{Error, Lang, link};
+use usuyo_fetch_rednote::fetch::{self, Request};
+use usuyo_fetch_rednote::{Error, Lang, link};
 use usuyo_plugin::protocol::{
     Canonicalized, Completeness, ErrorCode, FetchOutput, Identity, ItemKind, MediaKind,
     NotFoundReason, OutputKind,

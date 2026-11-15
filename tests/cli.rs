@@ -10,7 +10,7 @@ const ID: &str = "671234567890abcdef012345";
 const DEAD_PROXY: &str = "http://127.0.0.1:9";
 
 fn plugin(args: &[&str], visitor: Option<&Path>) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_usuyo-fetch-xiaohongshu"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_usuyo-fetch-rednote"));
     cmd.env_clear()
         .env("USUYO_PROTOCOL", "1")
         .env("USUYO_LOCALE", "zh-CN")
@@ -62,7 +62,7 @@ fn canonicalize_long_links() {
         assert!(out.status.success(), "{input}: {out:?}");
         let mut value = envelope(&out);
         assert_eq!(value["ok"], true);
-        assert_eq!(value["identity"]["platform"], "xiaohongshu");
+        assert_eq!(value["identity"]["platform"], "rednote");
         assert_eq!(value["identity"]["contentId"], ID);
         assert_eq!(
             value["identity"]["url"],
@@ -235,7 +235,7 @@ fn usage_errors_exit_2() {
 #[test]
 fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("plugins/usuyo-fetch/xiaohongshu/0.1.0");
+    let dir = tmp.path().join("plugins/usuyo-fetch/rednote/0.1.0");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("usuyo-plugin.yaml"),
@@ -243,23 +243,30 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     )
     .unwrap();
     std::fs::copy(
-        env!("CARGO_BIN_EXE_usuyo-fetch-xiaohongshu"),
-        dir.join("usuyo-fetch-xiaohongshu"),
+        env!("CARGO_BIN_EXE_usuyo-fetch-rednote"),
+        dir.join("usuyo-fetch-rednote"),
     )
     .unwrap();
     let found = usuyo_plugin::discover(&tmp.path().join("plugins")).unwrap();
     assert!(found.rejected.is_empty(), "{:?}", found.rejected);
     assert_eq!(found.fetch.len(), 1);
-    // 访客身份写在 `visitors` 里、只给笔记页那种方法，不是账号站点，也设置另列
+    // 访客身份写在 `visitors` 里、只给笔记页那种方法；账号站点只有站点窗口那一份网页数据（`browser-profile`），
+    // 只给「在 usuyo 中登录并读取」；设置另列
     let spec = &found.fetch[0].spec;
-    assert!(spec.sites.is_empty());
+    assert_eq!(spec.sites.len(), 1);
+    assert_eq!(spec.sites[0].site, "www.xiaohongshu.com");
+    assert_eq!(
+        spec.sites[0].credential,
+        usuyo_plugin::protocol::Credential::BrowserProfile
+    );
     assert_eq!(spec.visitors[0].site, "www.xiaohongshu.com");
-    // routes.md 第 3 节的每一行，加上 mediacrawler；做了的是笔记页、浏览器脚本、XHS-Downloader 和读 MediaCrawler 文件
+    // routes.md 第 3 节的每一行，加上 mediacrawler；做了的是笔记页、站点窗口、浏览器脚本、XHS-Downloader 和读 MediaCrawler 文件
     let ids: Vec<&str> = spec.methods.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(
         ids,
         [
             "note-page",
+            "in-usuyo",
             "userscript",
             "iphone",
             "android",
@@ -271,11 +278,33 @@ fn manifest_loads_in_the_host_and_routes_every_link_shape() {
     let built: Vec<&str> = spec.built().map(|m| m.id.as_str()).collect();
     assert_eq!(
         built,
-        ["note-page", "userscript", "xhs-downloader", "mediacrawler"]
+        [
+            "note-page",
+            "in-usuyo",
+            "userscript",
+            "xhs-downloader",
+            "mediacrawler"
+        ]
     );
     let note = spec.method("note-page").unwrap();
     assert_eq!(note.visitors, ["www.xiaohongshu.com"]);
     assert!(note.sites.is_empty() && note.capabilities.fetch.is_some());
+    let window = spec.method("in-usuyo").unwrap();
+    assert!(window.reads_in_window() && !window.callable());
+    assert_eq!(window.sites, ["www.xiaohongshu.com"]);
+    assert_eq!(
+        window.script.as_deref(),
+        Some("userscript/usuyo-xhs-window.js")
+    );
+    // 站点窗口交来的链接要合 `match`
+    assert!(
+        spec.matches(
+            &url::Url::parse(&format!(
+                "https://www.xiaohongshu.com/explore/{ID}?xsec_token=x"
+            ))
+            .unwrap()
+        )
+    );
     // 设置只有 xhs-downloader 方法用：本机服务地址和访问令牌（密钥）
     let settings: Vec<(&str, bool)> = found.fetch[0]
         .header

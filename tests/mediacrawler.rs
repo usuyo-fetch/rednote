@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use usuyo_fetch_xiaohongshu::mediacrawler::{Limits, list};
+use usuyo_fetch_rednote::mediacrawler::{Limits, list};
 use usuyo_plugin::protocol::{
     Access, Account, ErrorCode, ListOrder, ListPage, Login, PluginKind, PluginManifest,
 };
 use usuyo_plugin::{CallLimits, CallOptions, HostConfig, ListRequest, PluginHost, discover};
 
-const BIN: &str = env!("CARGO_BIN_EXE_usuyo-fetch-xiaohongshu");
+const BIN: &str = env!("CARGO_BIN_EXE_usuyo-fetch-rednote");
 const DEAD_PROXY: &str = "http://127.0.0.1:9";
 /// 样例文件里的帖子，新的在前：地址、标题、作者、发布时间。最后一条文件里没有时间。
 type Row<'a> = (&'a str, Option<&'a str>, Option<&'a str>, Option<&'a str>);
@@ -141,7 +141,7 @@ fn assert_posts(value: &Value) {
     assert_eq!(rows, EXPECTED);
     for item in items {
         // 只有链接：身份和平台插件别的方法给的一样；不带 ref、不带存下的时间
-        assert_eq!(item["identity"]["platform"], "xiaohongshu", "{item}");
+        assert_eq!(item["identity"]["platform"], "rednote", "{item}");
         assert_eq!(item["identity"]["url"], item["url"], "{item}");
         for absent in ["ref", "actedAt", "action"] {
             assert!(item.get(absent).is_none(), "{absent} in {item}");
@@ -308,7 +308,7 @@ fn list_refuses_what_is_not_a_file_import() {
     let tmp = tempfile::tempdir().unwrap();
     let path = file_in(tmp.path(), POSTS, &fixture(POSTS));
     let not_file = plugin(
-        &["list", "xiaohongshu:favorites", "--method", "mediacrawler"],
+        &["list", "rednote:favorites", "--method", "mediacrawler"],
         Some(&path),
     );
     assert_eq!(envelope(&not_file)["error"]["code"], "invalid-args");
@@ -548,11 +548,11 @@ fn files_over_the_limits_are_refused() {
 
 fn host() -> (tempfile::TempDir, PluginHost) {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("plugins/usuyo-fetch/xiaohongshu/0.1.0");
+    let dir = tmp.path().join("plugins/usuyo-fetch/rednote/0.1.0");
     std::fs::create_dir_all(&dir).unwrap();
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("usuyo-plugin.yaml");
     std::fs::copy(manifest, dir.join("usuyo-plugin.yaml")).unwrap();
-    std::fs::copy(BIN, dir.join("usuyo-fetch-xiaohongshu")).unwrap();
+    std::fs::copy(BIN, dir.join("usuyo-fetch-rednote")).unwrap();
     let found = discover(&tmp.path().join("plugins")).unwrap();
     assert!(found.rejected.is_empty(), "{:?}", found.rejected);
     let host = PluginHost::new(
@@ -571,7 +571,7 @@ fn host() -> (tempfile::TempDir, PluginHost) {
 async fn the_manifest_loads_and_a_file_is_listed_through_the_host() {
     let (tmp, host) = host();
     let plugin = &host.plugins()[0];
-    assert_eq!(plugin.id().as_str(), "usuyo-fetch/xiaohongshu");
+    assert_eq!(plugin.id().as_str(), "usuyo-fetch/rednote");
     let method = plugin.spec.method("mediacrawler").unwrap();
     let list = method.capabilities.list.as_ref().unwrap();
     assert!(!list.files.is_empty() && list.reads.is_some());

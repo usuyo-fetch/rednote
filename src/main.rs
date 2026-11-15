@@ -7,10 +7,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde::Serialize;
-use usuyo_fetch_xiaohongshu::fetch::{self, Request};
-use usuyo_fetch_xiaohongshu::{
-    Error, Lang, Site, link, mediacrawler, visitor_cookie, xhsdownloader,
-};
+use usuyo_fetch_rednote::fetch::{self, Request};
+use usuyo_fetch_rednote::{Error, Lang, Site, link, mediacrawler, visitor_cookie, xhsdownloader};
 use usuyo_plugin_kit::fetch::{Call, USAGE};
 use usuyo_plugin_kit::protocol::{CallFailure, Envelope, ErrorCode, FetchHealth, OutputKind};
 

@@ -1,7 +1,8 @@
-# 小红书获取插件（设计见 usuyo 仓库 docs/platforms/xiaohongshu.md §2）。
-# 只按你交来的笔记链接取公开笔记页，不登录、不签名；清单由 userscript/ 里的脚本在你的浏览器里交给 usuyo。
+# 小红书获取插件（设计见 usuyo 仓库 docs/platforms/rednote.md §2）。
+# 只按你交来的笔记链接取公开笔记页，不登录、不签名；收藏、赞过的清单由 userscript/ 里的脚本交给 usuyo：
+# 在 usuyo 的站点窗口里（in-usuyo），或在你自己浏览器的脚本管理器里（userscript）。
 protocol: 1
-id: usuyo-fetch/xiaohongshu
+id: usuyo-fetch/rednote
 kind: fetch
 name: 小红书
 description: 按你存过的笔记链接取公开笔记页的正文、图片和视频，做个人备份
@@ -15,7 +16,7 @@ upstream:
   - name: XHS-Downloader（你自己装、自己运行，插件只经本机 HTTP 调用）
     url: https://github.com/JoeanAmier/XHS-Downloader
     license: GPL-3.0
-platforms: [xiaohongshu]
+platforms: [rednote]
 match:
   - "www.xiaohongshu.com/explore/*"
   - "www.xiaohongshu.com/search_result/*"
@@ -23,6 +24,15 @@ match:
   - "www.xiaohongshu.com/user/profile/*"
   - "xhslink.com/*"
   - "xhslink.cn/*"
+# 账号只在 usuyo 给小红书单开的站点窗口里（browser-profile）：你在窗口里登录，cookie 留在那一份网页数据里，
+# usuyo 不读出来、不交给插件进程；登录后的页面里跑 userscript/usuyo-xhs-window.js，只交链接。
+# 登录后才有的 cookie 名没有核实过，所以不写 cookies：登录好没有由脚本读页面里登录的账号来认。
+sites:
+  - site: www.xiaohongshu.com
+    name: 小红书
+    credential: browser-profile
+    loginUrl: https://www.xiaohongshu.com/explore
+    domains: [".xiaohongshu.com"]
 # 访客身份不是账号：usuyo 开一次首页、不登录，存下页面自己生成的 cookie，经 USUYO_VISITOR 交给笔记页请求。
 visitors:
   - site: www.xiaohongshu.com
@@ -42,6 +52,20 @@ methods:
     capabilities:
       fetch:
         outputs: [text, images, media:video, meta]
+  # 在 usuyo 的站点窗口里登录，脚本打开你的个人页、点「收藏」再点「赞过」，usuyo 隔几秒叫它往下翻一屏；
+  # 只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题，交给 usuyo 落成导入，确认后由 note-page 去取。
+  - id: in-usuyo
+    name: 在 usuyo 中登录并读取
+    access: browser-session
+    login: required
+    account: in-usuyo
+    sites: [www.xiaohongshu.com]
+    delivers: links
+    script: userscript/usuyo-xhs-window.js
+    guide: 登录以后打开你的个人页，先读「收藏」再读「赞过」，只记页面自己请求回来的列表；默认隔几秒往下翻一屏，翻到底停下
+    risk:
+      text: 自动往下翻是用你的账号做的自动操作，比你自己翻高一级；网页对采集类扩展弹「有害插件」
+      source: {label: "XHS-Downloader #283", url: "https://github.com/JoeanAmier/XHS-Downloader/issues/283"}
   - id: userscript
     name: 浏览器脚本（收藏、赞过）
     access: browser-session
@@ -63,8 +87,8 @@ methods:
     capabilities:
       list:
         sources:
-          - {source: "xiaohongshu:favorites", title: 收藏, action: favorite}
-          - {source: "xiaohongshu:likes", title: 赞过, action: like}
+          - {source: "rednote:favorites", title: 收藏, action: favorite}
+          - {source: "rednote:likes", title: 赞过, action: like}
   - id: android
     name: 安卓手机
     built: false
@@ -76,8 +100,8 @@ methods:
     capabilities:
       list:
         sources:
-          - {source: "xiaohongshu:favorites", title: 收藏, action: favorite}
-          - {source: "xiaohongshu:likes", title: 赞过, action: like}
+          - {source: "rednote:favorites", title: 收藏, action: favorite}
+          - {source: "rednote:likes", title: 赞过, action: like}
   # xhs-downloader：问你自己在本机运行的 XHS-Downloader（GPL-3.0，API 模式，默认 127.0.0.1:5556），
   # 插件不带它、不装它、不下载它；请求体固定 download:false、check_record:false，不带 cookie 和账号。
   # 接口形状读自它 2.8 版的源码和 README，只对假服务测过，见 README。
@@ -120,7 +144,7 @@ settings:
   - {key: endpoint, label: XHS-Downloader 服务地址, type: string, default: "http://127.0.0.1:5556"}
   - {key: xhs-token, label: XHS-Downloader 访问令牌, type: string, secret: true}
 pacing:
-  xiaohongshu: {batch: true, interval: 15s, daily: 100}
+  rednote: {batch: true, interval: 15s, daily: 100}
 permissions:
   fs:
     read: ["${INPUT}"]
@@ -133,4 +157,4 @@ permissions:
   devices: []
   gpu: false
 run:
-  command: ["${PLUGIN_DIR}/usuyo-fetch-xiaohongshu"]
+  command: ["${PLUGIN_DIR}/usuyo-fetch-rednote"]

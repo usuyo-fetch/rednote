@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use usuyo_fetch_xiaohongshu::xhsdownloader::{self, Request, Service};
-use usuyo_fetch_xiaohongshu::{Error, Lang, Site};
+use usuyo_fetch_rednote::xhsdownloader::{self, Request, Service};
+use usuyo_fetch_rednote::{Error, Lang, Site};
 use usuyo_plugin::protocol::{Access, Account, Login, OutputKind, PluginKind, PluginManifest};
 use usuyo_plugin_kit::http::Policy;
 
@@ -20,7 +20,7 @@ const ID: &str = "671234567890abcdef012345";
 const TOKEN: &str = "payload.signature-TOKEN-0123";
 const JPEG: &[u8] = b"\xff\xd8\xff\xe0fake-jpeg";
 const MP4: &[u8] = b"\x00\x00\x00\x18ftypmp42fake-video-bytes";
-const BIN: &str = env!("CARGO_BIN_EXE_usuyo-fetch-xiaohongshu");
+const BIN: &str = env!("CARGO_BIN_EXE_usuyo-fetch-rednote");
 const DEAD_PROXY: &str = "http://127.0.0.1:9";
 
 fn fixture(name: &str, base: &str) -> String {
@@ -250,7 +250,7 @@ fn video_note_through_the_service() {
 
     // 身份和 note-page 的一样
     let value = serde_json::to_value(&got).unwrap();
-    assert_eq!(value["identity"]["platform"], "xiaohongshu");
+    assert_eq!(value["identity"]["platform"], "rednote");
     assert_eq!(value["identity"]["contentId"], ID);
     assert_eq!(
         value["identity"]["url"],

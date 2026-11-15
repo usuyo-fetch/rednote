@@ -1036,7 +1036,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "usuyo-fetch-xiaohongshu"
+name = "usuyo-fetch-rednote"
 version = "0.1.0"
 dependencies = [
  "anyhow",

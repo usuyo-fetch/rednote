@@ -39,15 +39,35 @@ fn userscript_connects_only_to_this_machine() {
 
 #[test]
 fn userscript_reads_no_cookies_and_writes_no_page_storage() {
-    for needle in [
-        "document.cookie",
-        "localStorage.",
-        "sessionStorage.",
-        "indexedDB",
-    ] {
-        assert!(
-            !SCRIPT.contains(needle),
-            "the userscript still has `{needle}`"
-        );
+    for script in [SCRIPT, WINDOW] {
+        for needle in [
+            "document.cookie",
+            "localStorage.",
+            "sessionStorage.",
+            "indexedDB",
+        ] {
+            assert!(!script.contains(needle), "a script still has `{needle}`");
+        }
     }
+}
+
+/// usuyo 站点窗口里的那一段：只经 `usuyo.submit` 交，自己不连任何地方、不碰 usuyo 的本机端口和令牌。
+const WINDOW: &str = include_str!("../userscript/usuyo-xhs-window.js");
+
+#[test]
+fn the_window_script_hands_over_only_through_usuyo_submit() {
+    for needle in [
+        "GM_",
+        "127.0.0.1",
+        "47615",
+        "XMLHttpRequest(",
+        "new WebSocket",
+        "sendBeacon",
+        "__TAURI",
+        "Bearer",
+    ] {
+        assert!(!WINDOW.contains(needle), "the window script has `{needle}`");
+    }
+    assert!(WINDOW.contains("usuyo.submit("));
+    assert!(!WINDOW.contains("http://") && !WINDOW.contains("https://"));
 }

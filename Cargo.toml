@@ -1,5 +1,5 @@
 [package]
-name = "usuyo-fetch-xiaohongshu"
+name = "usuyo-fetch-rednote"
 description = "usuyo 的小红书获取插件：按你存过的笔记链接取公开笔记页，做个人备份和离线阅读"
 version = "0.1.0"
 edition = "2024"
@@ -11,7 +11,7 @@ publish = false
 [workspace]
 
 [[bin]]
-name = "usuyo-fetch-xiaohongshu"
+name = "usuyo-fetch-rednote"
 path = "src/main.rs"
 
 [dependencies]

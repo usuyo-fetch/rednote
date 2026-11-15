@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, TcpListener};
 use std::sync::{Arc, Mutex};
 
-use usuyo_fetch_xiaohongshu::Site;
+use usuyo_fetch_rednote::Site;
 use usuyo_plugin_kit::http::Policy;
 
 pub const ID: &str = "671234567890abcdef012345";
