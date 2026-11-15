@@ -18,7 +18,7 @@
 
 ### note-page
 
-取单条笔记：正文、作者、发布时间、互动数、标签、图片、视频和平台自带的字幕。请求公开笔记页，读页面里的 `window.__INITIAL_STATE__`；不登录、不签名，第一个请求就带访客身份（usuyo 打开一次首页、不登录，存下页面自己生成的 cookie）。没有访客身份时不发请求，回 `visitor-required`，usuyo 去取一份再排这一条；带着访客身份还被送去登录页或首页，回 `visitor-required` 说这份不被收，usuyo 换一份；碰到验证页、HTTP 403/406/461/471、JSON 的风控码（300011、300012、300013、300015、461、471、-1）回 `blocked`，不重试。请求只带 `xsec_token` 和 `xsec_source`，链接里没有 `xsec_source` 时补 `pc_user`。认 `xhslink.com`、`xhslink.cn` 短链。
+取单条笔记：正文、作者、发布时间、互动数、标签、图片、视频和平台自带的字幕。请求公开笔记页，读页面里的 `window.__INITIAL_STATE__`；不登录、不签名，第一个请求就带访客身份（usuyo 打开一次首页、不登录，存下页面自己生成的 cookie）。没有访客身份时不发请求，回 `visitor-required`，usuyo 去取一份再排这一条；带着访客身份还被送去登录页或首页，回 `visitor-required` 说这份不被收，usuyo 换一份；碰到验证页、HTTP 403/406/461/471、JSON 的风控码（300011、300012、300013、300015、461、471、-1）回 `blocked`，不重试。清单的节奏写的是两次请求之间隔 15 到 25 秒、每次随机，每天最多 100 次，被拦以后停下（`blocked: stop`）：usuyo 收到 `blocked` 就停下整个小红书，单条和导入都不再取，等你在获取插件页点「继续获取」。请求只带 `xsec_token` 和 `xsec_source`，链接里没有 `xsec_source` 时补 `pc_user`。认 `xhslink.com`、`xhslink.cn` 短链。
 
 视频在 `video.media.stream` 下每一档里挑，不认档名：先挑 h264 的 mp4，短边不超过 720 的最大那一档（不追最高画质），主地址不通试备用地址。字幕取 `video.media.video.subtitles`，按原声、`zh-CN`、`en-US` 的先后挑一份：WebVTT 原样存；SRT 原样留一份 `.srt`，另存一份换成 WebVTT 的交出去（usuyo 按 WebVTT 读字幕）。图片、视频、字幕只下 `*.xhscdn.com`、`*.rednotecdn.com` 上的地址，带 Referer、不带 cookie。不填 cookie 批量取约 108 条后，复制链接的账号被下线（见 XHS-Downloader 的 issue 305）。
 

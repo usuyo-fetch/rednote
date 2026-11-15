@@ -109,8 +109,9 @@ methods:
         sources:
           - {source: "rednote:favorites", title: 收藏, action: favorite}
           - {source: "rednote:likes", title: 赞过, action: like}
+# 两次请求之间隔 15 到 25 秒，每次随机；被拦（验证页、风控码）以后 usuyo 停下整个小红书，等你点「继续获取」，不自己接着。
 pacing:
-  rednote: {batch: true, interval: 15s, daily: 100}
+  rednote: {batch: true, interval: 15s, intervalMax: 25s, daily: 100, blocked: stop}
 permissions:
   fs:
     write: ["${OUT}"]
