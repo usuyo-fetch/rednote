@@ -5,14 +5,14 @@
 | 功能 | 实现方式（方法 id） | 账号 | 风险层级 | 状态 |
 |---|---|---|---|---|
 | 按链接取单条笔记（正文、图片、视频） | `note-page` | 访客身份 | `public-web`，默认开 | 已实现 |
-| 列出我的收藏 | `in-usuyo` | 登录进 usuyo（站点窗口自己一份网页数据，cookie 不拷出来） | `browser-session`，默认关 | 已实现，只对本机假站点测过 |
-| 列出我的收藏 | `userscript` | 只在使用者的浏览器内 | `browser-session`，默认关 | 已实现 |
-| 列出我的收藏 | `iphone` | 只在手机的 App 内 | `vision-ui`，默认关 | 未实现 |
-| 列出我的收藏 | `android` | 只在手机的 App 内 | `vision-ui`，默认关 | 未实现 |
-| 列出赞过的笔记 | `in-usuyo` | 登录进 usuyo（同上） | `browser-session`，默认关 | 已实现，只对本机假站点测过 |
-| 列出赞过的笔记 | `userscript` | 只在使用者的浏览器内 | `browser-session`，默认关 | 已实现 |
-| 列出赞过的笔记 | `iphone` | 只在手机的 App 内 | `vision-ui`，默认关 | 未实现 |
-| 列出赞过的笔记 | `android` | 只在手机的 App 内 | `vision-ui`，默认关 | 未实现 |
+| 列出我的收藏 | `in-usuyo` | 登录进 usuyo（站点窗口自己一份网页数据，cookie 不拷出来） | `browser-session`，默认开 | 已实现，只对本机假站点测过 |
+| 列出我的收藏 | `userscript` | 只在使用者的浏览器内 | `browser-session`，默认开 | 已实现 |
+| 列出我的收藏 | `iphone` | 只在手机的 App 内 | `vision-ui`，默认开 | 未实现 |
+| 列出我的收藏 | `android` | 只在手机的 App 内 | `vision-ui`，默认开 | 未实现 |
+| 列出赞过的笔记 | `in-usuyo` | 登录进 usuyo（同上） | `browser-session`，默认开 | 已实现，只对本机假站点测过 |
+| 列出赞过的笔记 | `userscript` | 只在使用者的浏览器内 | `browser-session`，默认开 | 已实现 |
+| 列出赞过的笔记 | `iphone` | 只在手机的 App 内 | `vision-ui`，默认开 | 未实现 |
+| 列出赞过的笔记 | `android` | 只在手机的 App 内 | `vision-ui`，默认开 | 未实现 |
 
 ## 方法
 
