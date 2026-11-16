@@ -6,22 +6,58 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use url::Url;
-use usuyo_plugin_kit::http::{Client, Cookie, Hosts, Response};
+use usuyo_plugin_kit::http::{Client, Cookie, Hosts, Response, Visitor};
 
 use crate::error::Error;
 use crate::site::Site;
 
-/// 普通桌面 Chrome 的 UA 和 Accept（ParseHub 记过：UA 和 Accept 对不上会被送去验证页）。
+/// 宿主没交来访客窗口的 UA 时用的：普通桌面 Chrome 的 UA 和 Accept
+/// （ParseHub `provider_api/xhs.py:20-30` 记过：UA 和 Accept 对不上会被送去验证页）。
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
-const ACCEPT_HTML: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
-const ACCEPT_IMAGE: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
+const CHROME_ACCEPT_HTML: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
+const CHROME_ACCEPT_IMAGE: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
+/// Safari（WebKit）一类的 UA 配的 Accept，照 ParseHub 给 iPhone Safari UA 配的那一行。
+/// 图片没有出处，不猜，写 `*/*`。`sec-ch-ua` 这类只有 Chromium 发的头一概不发。
+const WEBKIT_ACCEPT_HTML: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 const ACCEPT_MEDIA: &str = "*/*";
+
+/// 一次调用用的 UA 和配它的 Accept。
+#[derive(Debug, Clone)]
+struct Agent {
+    user_agent: String,
+    accept_html: &'static str,
+    accept_image: &'static str,
+}
+
+impl Agent {
+    /// 访客窗口交来的 UA 照它的家族配 Accept；没有就是插件自己的 Chrome。
+    fn of(user_agent: Option<&str>) -> Agent {
+        let ua = user_agent.unwrap_or(USER_AGENT);
+        let chromium = ["Chrome/", "Chromium/", "Edg/"]
+            .iter()
+            .any(|k| ua.contains(k));
+        Agent {
+            user_agent: ua.to_owned(),
+            accept_html: if chromium {
+                CHROME_ACCEPT_HTML
+            } else {
+                WEBKIT_ACCEPT_HTML
+            },
+            accept_image: if chromium {
+                CHROME_ACCEPT_IMAGE
+            } else {
+                ACCEPT_MEDIA
+            },
+        }
+    }
+}
 /// 整次调用最多读这么多字节：笔记页、图片、视频、实况图加起来。
 const CALL_BYTES: u64 = 4 << 30;
 
-/// 宿主交来的访客身份（`USUYO_VISITOR`），只发给笔记页的主机、只走 https。没交时是 `None`。
-pub fn visitor_cookie(site: &Site) -> Result<Option<Cookie>, Error> {
-    Cookie::visitor(site.web_hosts()).map_err(|e| Error::Visitor(e.to_string()))
+/// 宿主交来的访客身份（`USUYO_VISITOR`）：cookie 只发给笔记页的主机、只走 https；带着取它的那个窗口的 UA。
+/// 没交时是 `None`。
+pub fn visitor(site: &Site) -> Result<Option<Visitor>, Error> {
+    Visitor::from_env(site.web_hosts()).map_err(|e| Error::Visitor(e.to_string()))
 }
 
 pub(crate) struct Http<'s> {
@@ -33,13 +69,22 @@ pub(crate) struct Http<'s> {
     deadline: Instant,
     /// 整次调用还能读多少字节，图片和视频一起算。
     bytes_left: Cell<u64>,
+    agent: Agent,
+    /// UA 是不是访客窗口的（写进失败原因）。
+    visitor_agent: bool,
 }
 
 impl<'s> Http<'s> {
     /// `budget` 是整次调用留给网络的总时长，要比宿主的总超时短，留出收尾的时间。
     pub(crate) fn new(site: &'s Site, budget: Duration) -> Self {
+        Self::new_as(site, budget, None)
+    }
+
+    /// 和 [`Http::new`] 一样，但所有请求都用 `user_agent`（访客窗口的 UA）和配它的 Accept。
+    pub(crate) fn new_as(site: &'s Site, budget: Duration, user_agent: Option<&str>) -> Self {
+        let agent = Agent::of(user_agent);
         let client = |hosts: Vec<String>| {
-            Client::new(USER_AGENT, Hosts::only(hosts)).with_policy(site.policy())
+            Client::new(agent.user_agent.as_str(), Hosts::only(hosts)).with_policy(site.policy())
         };
         Self {
             site,
@@ -48,7 +93,13 @@ impl<'s> Http<'s> {
             media: client(site.media_hosts()),
             deadline: Instant::now() + budget,
             bytes_left: Cell::new(CALL_BYTES),
+            visitor_agent: user_agent.is_some(),
+            agent,
         }
+    }
+
+    pub(crate) fn visitor_agent(&self) -> bool {
+        self.visitor_agent
     }
 
     /// 测试用：换一个小的字节总量。
@@ -93,8 +144,8 @@ impl<'s> Http<'s> {
             return Err(Error::Network(BYTES_SPENT.into()));
         }
         let accept = match purpose {
-            Purpose::Page { .. } | Purpose::Short => ACCEPT_HTML,
-            Purpose::Image => ACCEPT_IMAGE,
+            Purpose::Page { .. } | Purpose::Short => self.agent.accept_html,
+            Purpose::Image => self.agent.accept_image,
             Purpose::Video | Purpose::Subtitle => ACCEPT_MEDIA,
         };
         let client = match purpose {

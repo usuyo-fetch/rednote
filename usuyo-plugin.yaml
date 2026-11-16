@@ -45,8 +45,15 @@ visitors:
   - site: www.xiaohongshu.com
     name: 小红书
     url: https://www.xiaohongshu.com/
+    # 这三个都出现了才算取到：a1、webId 照 ParseHub provider_api/xhs.py:56（游客 session 先有这两个）；
+    # web_session 是 ParseHub 游客那一路带去笔记页的唯一一个（xhs.py:53-78），
+    # MediaCrawler media_platform/xhs/login.py:191-193 在没登录的浏览器里也读到它。别的名字没有出处，不写。
+    cookies: [a1, webId, web_session]
 # 几种方法各列一项（usuyo 协议 §2.3.1），没做的也列；行和 usuyo 仓库 docs/platforms/routes.md 第 3 节一一对应。
 methods:
+  # 先带访客身份（和取它时窗口的 UA）请求网页版笔记页；这份不被收（送去登录页、首页、没给内容）时，
+  # 再用手机版页面取一次：iPhone Safari 的 UA，不使用账号、不带任何 cookie（ParseHub parsers/parser/xhs.py:36-58
+  # 的第三段）。验证页、/404/sec 马上停，不换手机版去试。
   - id: note-page
     name: 公开笔记页
     access: public-web
@@ -59,7 +66,7 @@ methods:
     capabilities:
       fetch:
         outputs: [text, images, media:video, subtitle, meta]
-  # 在 usuyo 的站点窗口里登录，脚本打开你的个人页、点「收藏」再点「赞过」，usuyo 隔几秒叫它往下翻一屏；
+  # 在 usuyo 的站点窗口里登录，脚本打开你的个人页、点「收藏」再点「赞过」（页面上写「点赞」），usuyo 隔几秒叫它往下翻一屏；
   # 只看页面自己请求回来的列表，记下笔记 id、xsec_token 和标题，交给 usuyo 落成导入，确认后由 note-page 去取。
   - id: in-usuyo
     name: 在 usuyo 中登录并读取
@@ -69,7 +76,7 @@ methods:
     sites: [www.xiaohongshu.com]
     delivers: links
     script: userscript/usuyo-xhs-window.js
-    guide: 登录以后打开你的个人页，先读「收藏」再读「赞过」，只记页面自己请求回来的列表；默认隔几秒往下翻一屏，翻到底停下
+    guide: 登录以后打开你的个人页，先读「收藏」再读「赞过」（页面上写「点赞」），只记页面自己请求回来的列表；默认隔几秒往下翻一屏，每读完一个列表就发送到 usuyo，都读过了自己结束；碰到验证页、要登录时停下
     risk:
       text: 自动往下翻是用你的账号做的自动操作，比你自己翻高一级；网页对采集类扩展弹「有害插件」
       source: {label: "XHS-Downloader #283", url: "https://github.com/JoeanAmier/XHS-Downloader/issues/283"}

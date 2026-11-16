@@ -98,13 +98,16 @@ function site({ pages, answer, path = '/explore', title = '小红书', hideTabs 
     doc.scrollingElement.scrollHeight = 800;
     more();
   };
-  const tabs = [new Tab('笔记', () => {}), new Tab('收藏', show('favorite')), new Tab('赞过', show('like'))];
-  const shownTabs = { on: !hideTabs };
+  const tabs = [new Tab('笔记', () => {}), new Tab('收藏', show('favorite')), new Tab('点赞', show('like'))];
+  const shownTabs = { on: !hideTabs, only: null };
+  // 侧栏里指向你自己个人页的「我」：登录了才有（MediaCrawler 照它认登录）
+  const sidebar = { on: false };
   const doc = {
     title,
     readyState: 'loading',
     scrollingElement: { scrollHeight: 800 },
-    querySelectorAll: () => (shownTabs.on ? tabs : []),
+    querySelectorAll: () => (shownTabs.on ? tabs.filter((t) => !shownTabs.only || shownTabs.only.includes(t.textContent)) : []),
+    querySelector: (sel) => (sidebar.on && sel.includes('/user/profile/' + ME) ? {} : null),
   };
   const reports = [];
   const usuyo = {
@@ -131,6 +134,11 @@ function site({ pages, answer, path = '/explore', title = '小红书', hideTabs 
     fetched,
     signIn: () => {
       win.__INITIAL_STATE__.user.userInfo._value = { user_id: ME };
+      sidebar.on = true;
+    },
+    /** 只显示这几个标签。 */
+    onlyTabs: (names) => {
+      shownTabs.only = names;
     },
     tick: async () => {
       interval();
@@ -200,18 +208,20 @@ test('a verification page stops the reading at once', async () => {
   assert.equal(s.win.assigned, undefined, 'does not go anywhere after a stop');
 });
 
-test('a list answer it does not recognise stops the reading', async () => {
+test('a list answer it does not recognise skips that list', async () => {
   const s = site({
     path: '/user/profile/' + ME,
-    pages: { favorite: [notes(1, 2)] },
+    pages: { favorite: [notes(1, 2)], like: [notes(10, 1)] },
     answer: (action) => (action === 'favorite' ? { code: 0, data: { items: [{ id: 'x' }] } } : null),
   });
   s.signIn();
   await s.tick();
   await s.tick();
-  assert.equal(s.last().state, 'stopped');
-  assert.equal(s.last().reason, 'unknown');
-  assert.deepEqual(s.links(), []);
+  assert.notEqual(s.last().state, 'stopped');
+  assert.deepEqual(s.last().finished, [{ action: 'favorite', reason: 'unknown' }]);
+  for (let i = 0; i < 8 && s.last().state !== 'end'; i++) await s.step();
+  assert.equal(s.last().state, 'end');
+  assert.deepEqual(s.links().map((l) => l.action), ['like']);
 });
 
 test('an error code from the site stops the reading', async () => {
@@ -255,7 +265,39 @@ test('a guest page that says it is not signed in does not count as signed in', a
   assert.equal(s.win.assigned, undefined);
 });
 
-test('after a stop it reads on from where it stopped, including a list you opened yourself', async (t) => {
+test('a list it cannot find is skipped with the reason and the reading ends by itself', async (t) => {
+  const s = site({ path: '/user/profile/' + ME, pages: { favorite: [notes(1, 3)], like: [notes(10, 2)] } });
+  // 页面上只有「收藏」：读完收藏，等一会儿找不到下一个，跳过它，自己说到底了
+  s.onlyTabs(['笔记', '收藏']);
+  s.signIn();
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  await s.tick();
+  for (let i = 0; i < 4; i++) await s.step();
+  assert.deepEqual(s.last().finished, [{ action: 'favorite' }], 'favorites are finished before likes');
+  assert.notEqual(s.last().state, 'stopped');
+  // 读完收藏以后才开始等下一个标签：刚读完时不跳
+  assert.ok(!s.reports.some((r) => (r.finished || []).some((f) => f.action === 'like')));
+  Date.now.mock.mockImplementation(() => now + 9000);
+  await s.tick();
+  await s.tick();
+  assert.equal(s.last().state, 'end');
+  assert.ok(!s.reports.some((r) => r.state === 'stopped'), 'never waits for you');
+  assert.deepEqual(s.last().finished, [{ action: 'favorite' }, { action: 'like', reason: 'notab' }]);
+  assert.equal(new Set(s.links().map((l) => l.url)).size, 3);
+});
+
+test('the likes tab is found under its current name', async () => {
+  const s = site({ path: '/user/profile/' + ME, pages: { favorite: [notes(1, 1)], like: [notes(10, 2)] } });
+  s.signIn();
+  await s.tick();
+  for (let i = 0; i < 12 && s.last().state !== 'end'; i++) await s.step();
+  assert.equal(s.last().state, 'end');
+  assert.deepEqual(s.last().finished, [{ action: 'favorite' }, { action: 'like' }]);
+  assert.equal(s.links().filter((l) => l.action === 'like').length, 2);
+});
+
+test('with no list on the page both are skipped, and a list you open yourself is still read', async (t) => {
   const s = site({ path: '/user/profile/' + ME, pages: { favorite: [notes(1, 3)], like: [] }, hideTabs: true });
   s.signIn();
   const now = Date.now();
@@ -263,16 +305,68 @@ test('after a stop it reads on from where it stopped, including a list you opene
   await s.tick();
   Date.now.mock.mockImplementation(() => now + 9000);
   await s.tick();
-  assert.equal(s.last().reason, 'notab');
+  // 「赞过」从这时起等，等满了也跳过
+  await s.tick();
+  Date.now.mock.mockImplementation(() => now + 18500);
+  await s.tick();
+  await s.tick();
+  assert.equal(s.last().state, 'end');
+  assert.deepEqual(s.last().finished, [
+    { action: 'favorite', reason: 'notab' },
+    { action: 'like', reason: 'notab' },
+  ]);
+  // 你自己点开「收藏」往下翻：照样记下、交出去
+  s.tabs[1].click();
+  await s.tick();
+  await s.tick();
+  assert.equal(new Set(s.links().map((l) => l.url)).size, 3);
+});
+
+test('a guest page with an id in its state but nothing only a signed-in page has is not signed in', async () => {
+  const s = site({ pages: {} });
+  // 访客也有一个 id；没有 loggedIn，也没有侧栏里指向自己的「我」
+  s.win.__INITIAL_STATE__ = { user: { userInfo: { _value: { user_id: ME } } } };
+  await s.tick();
+  assert.equal(s.last().signedIn, false);
+  assert.equal(s.win.assigned, undefined, 'stays put');
+  // 诊断里有 `user` 的形状（键和类型），没有值
+  const d = JSON.parse(s.reports.map((r) => r.diagnosis).filter(Boolean).pop());
+  assert.equal(d.user.userInfo._value.user_id, 'string:24');
+  // 认登录的三样：页面没说 loggedIn、读出了 id、没有个人页链接
+  assert.deepEqual(d.signin, { loggedIn: 'absent', id: true, profileLink: false });
+  // 计算出来的 loggedIn（只有读 value 才有值）说没登录：也不算
+  s.win.__INITIAL_STATE__ = { user: { loggedIn: { get value() { return false; } }, userInfo: { _value: { user_id: ME } } } };
+  await s.tick();
+  assert.equal(s.last().signedIn, false);
+  // 页面说登录了：算
+  s.win.__INITIAL_STATE__ = { user: { loggedIn: { get value() { return true; } }, userInfo: { _value: { user_id: ME } } } };
+  await s.tick();
+  assert.equal(s.last().signedIn, true);
+});
+
+test('an error code from the site stops and does not move on to the next list', async () => {
+  const s = site({ path: '/user/profile/' + ME, pages: { favorite: [notes(1, 2)], like: [notes(10, 1)] }, answer: (a) => (a === 'favorite' ? { code: 300013, msg: 'x', data: {} } : null) });
+  s.signIn();
+  await s.tick();
+  for (let i = 0; i < 6; i++) await s.step();
+  assert.equal(s.last().state, 'stopped');
+  assert.equal(s.last().reason, 'errorCode');
+  assert.ok(!s.fetched.some((u) => /note\/like\/page/.test(u)), 'likes were not opened');
+});
+
+test('after a stop it reads on from where it stopped', async () => {
+  const s = site({ path: '/website-login/captcha', pages: { favorite: [notes(1, 3)], like: [] } });
+  s.signIn();
+  await s.tick();
+  assert.equal(s.last().reason, 'verify');
   // 停着：叫它翻也不翻
   await s.step();
   assert.equal(s.last().state, 'stopped');
-  // 你自己点开「收藏」，再点「继续」
-  s.tabs[1].click();
-  await s.tick();
+  s.win.location.pathname = '/user/profile/' + ME;
   await s.resume();
   assert.equal(s.last().state, 'reading', 'tells usuyo at once that it reads on');
   for (let i = 0; i < 10 && s.last().state !== 'end'; i++) await s.step();
+  assert.equal(s.last().state, 'end');
   assert.equal(new Set(s.links().map((l) => l.url)).size, 3);
 });
 

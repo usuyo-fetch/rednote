@@ -3,6 +3,10 @@
 //! 依据（2026-11 读的源码和 issue，没有对小红书发请求）：
 //! - 笔记在 `note.noteDetailMap[<id>].note`，另有 `note.firstNoteId`
 //!   （ParseHub `provider_api/xhs.py`、XHS-Downloader `expansion/converter.py`）；
+//!   手机版页面（iPhone Safari 的 UA 请求同一个地址）在 `noteData.data.noteData`，字段和网页版的 `note` 一样，
+//!   作者昵称多是 `user.nickname`（网页版是 `nickName`）：ParseHub `provider_api/xhs.py:95-107` 两种都用同一套
+//!   `title`、`desc`、`type`、`imageList`、`video.media.stream` 读，XHS-Downloader `expansion/converter.py:11-21,44-49`
+//!   先找手机版的路径再找网页版的，之后同一个 `application/explore.py` 读 `noteId`、`user.nickname`/`user.nickName`；
 //! - 字段名 `noteId`、`type`（`normal` / `video`）、`title`、`desc`、`time`（毫秒）、
 //!   `user.{userId,nickname}`、`tagList[].name`、`interactInfo.*Count`、
 //!   `imageList[].{urlDefault,url,infoList,livePhoto,stream}`、
@@ -229,8 +233,24 @@ pub struct Note {
     pub raw: Value,
 }
 
-/// 从状态对象里取出 `id` 这篇笔记。
+/// 从状态对象里取出 `id` 这篇笔记：网页版的 `note.noteDetailMap`，或手机版的 `noteData.data.noteData`。
 pub fn note(state: &Value, id: &str) -> Result<Note, StateError> {
+    // 先找手机版的，没有再找网页版的（XHS-Downloader `expansion/converter.py:44-49`、ParseHub `xhs.py:96-99` 都这样）
+    let h5 = state
+        .pointer("/noteData/data/noteData")
+        .filter(|n| n.as_object().is_some_and(|o| !o.is_empty()));
+    let raw = match h5 {
+        Some(n) => n,
+        None if state.get("note").is_none() && state.get("noteData").is_some() => {
+            return Err(StateError::Absent(id.into()));
+        }
+        None => pc_note(state, id)?,
+    };
+    parse_note(raw, id)
+}
+
+/// 网页版：`note.noteDetailMap` 里按 id 找，找不到按 `firstNoteId`，只有一篇就是它。
+fn pc_note<'v>(state: &'v Value, id: &str) -> Result<&'v Value, StateError> {
     let missing = |path: &str| StateError::Missing(path.into());
     let section = state.get("note").ok_or_else(|| missing("note"))?;
     let map = section
@@ -242,11 +262,14 @@ pub fn note(state: &Value, id: &str) -> Result<Note, StateError> {
         .get(id)
         .or_else(|| first.and_then(|f| map.get(f)))
         .or_else(|| (map.len() == 1).then(|| map.values().next()).flatten());
-    let raw = entry
+    entry
         .and_then(|e| e.get("note"))
         .filter(|n| n.as_object().is_some_and(|o| !o.is_empty()))
-        .ok_or_else(|| StateError::Absent(id.into()))?;
+        .ok_or_else(|| StateError::Absent(id.into()))
+}
 
+fn parse_note(raw: &Value, id: &str) -> Result<Note, StateError> {
+    let missing = |path: &str| StateError::Missing(path.into());
     let found = text(raw, "noteId").ok_or_else(|| missing("note.noteId"))?;
     if !found.eq_ignore_ascii_case(id) {
         return Err(StateError::WrongNote {
@@ -543,6 +566,25 @@ mod tests {
 
     fn minimal() -> Value {
         serde_json::json!({"noteId": ID, "type": "normal", "imageList": []})
+    }
+
+    /// 手机版页面：`noteData.data.noteData`，字段和网页版的一样，昵称是 `nickname`（手写的形状，出处见文件头）。
+    #[test]
+    fn the_mobile_page_shape_reads_the_same_fields() {
+        let mut n = minimal();
+        n["title"] = "标题".into();
+        n["user"] = serde_json::json!({"userId": "u1", "nickname": "作者"});
+        let h5 = serde_json::json!({"noteData": {"data": {"noteData": n}}});
+        let got = note(&h5, ID).unwrap();
+        assert_eq!(got.title.as_deref(), Some("标题"));
+        assert_eq!(got.author.unwrap().nickname.as_deref(), Some("作者"));
+        // 手机版页面在、这篇没给：和网页版一样算没给内容
+        let empty = serde_json::json!({"noteData": {"data": {"noteData": {}}}});
+        assert!(matches!(note(&empty, ID), Err(StateError::Absent(_))));
+        // 手机版那一格是空的、网页版的在：读网页版的
+        let mut both = state_with(minimal());
+        both["noteData"] = serde_json::json!({"data": {"noteData": {}}});
+        assert!(note(&both, ID).is_ok());
     }
 
     #[test]

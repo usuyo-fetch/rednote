@@ -1,4 +1,6 @@
-//! 取一篇笔记（协议 §3.6、§3.7）：带着宿主交来的访客身份请求笔记页，只请求一次，不重试；
+//! 取一篇笔记（协议 §3.6、§3.7）：带着宿主交来的访客身份请求笔记页；这份访客身份不被收（送去登录页、首页、
+//! 页面没给这篇的内容）或没有交来时，再用手机版页面、不带任何 cookie 请求一次（ParseHub
+//! `parsers/parser/xhs.py:36-58` 的第三段「移动端」）。验证页、`/404/sec` 和别的错都不再试。
 //! 解析状态对象，按 `--want` 下载图片、视频和平台字幕。
 
 use std::collections::BTreeSet;
@@ -46,6 +48,25 @@ const VIDEO_BYTES: u64 = 2 << 30;
 const LIVE_BYTES: u64 = 64 << 20;
 const PROGRESS_STEP: u64 = 8 << 20;
 const SUBTITLE_TIMEOUT: Duration = Duration::from_secs(20);
+/// 手机版页面那一段用的 iPhone Safari UA（照 ParseHub `provider_api/xhs.py:25-30` 的 `MOBILE_HEADERS`；
+/// Accept 跟着 UA 配 Safari 的那一行，见 `http.rs`）。
+const MOBILE_USER_AGENT: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1";
+
+/// 这篇是哪一段取到的：带访客身份的网页版，或不带 cookie 的手机版。写进 `meta.json` 和失败原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stage {
+    VisitorPage,
+    MobilePage,
+}
+
+impl Stage {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Stage::VisitorPage => "visitor-page",
+            Stage::MobilePage => "mobile-page",
+        }
+    }
+}
 const SUBTITLE_BYTES: u64 = 4 << 20;
 
 pub struct Request<'a> {
@@ -54,8 +75,10 @@ pub struct Request<'a> {
     pub out: &'a Path,
     /// `None` 是全要。
     pub want: Option<BTreeSet<OutputKind>>,
-    /// 宿主交来的访客身份，见 [`crate::visitor_cookie`]。
+    /// 宿主交来的访客身份，见 [`crate::visitor`]。
     pub visitor_cookie: Option<&'a Cookie>,
+    /// 取访客身份的那个窗口的 UA：所有请求都用它（和配它的 Accept）；没有就用插件自己的。
+    pub user_agent: Option<&'a str>,
 }
 
 pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
@@ -63,25 +86,13 @@ pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
     if let Some(other) = wanted.iter().find(|w| !OUTPUTS.contains(w)) {
         return Err(Error::InvalidArgs(format!("cannot give `{other}`")));
     }
-    let http = Http::new(site, BUDGET);
-    // 第一个请求就带访客身份（照 ParseHub `parsers/parser/xhs.py:36-58` 的先后、XHS-Downloader 有 cookie 就带）；
-    // 没有就什么请求都不发（短链也不展开），回 `visitor-required`，宿主开不登录的访客窗口取一份再排这一条
-    let visitor = || {
-        request
-            .visitor_cookie
-            .ok_or_else(|| Error::VisitorRequired {
-                at: "no request sent: no visitor identity was handed over".into(),
-                cookie_tried: false,
-            })
-    };
+    let http = Http::new_as(site, BUDGET, request.user_agent);
+    let mobile = Http::new_as(site, BUDGET, Some(MOBILE_USER_AGENT));
     let note_link = match link::classify(site, request.input) {
         Some(Link::Note(n)) => n,
-        Some(Link::Short(short)) => {
-            visitor()?;
-            link::expand(&http, &short)?.ok_or_else(|| {
-                Error::Unsupported(format!("`{}` does not lead to a note", request.input))
-            })?
-        }
+        Some(Link::Short(short)) => link::expand(&http, &short)?.ok_or_else(|| {
+            Error::Unsupported(format!("`{}` does not lead to a note", request.input))
+        })?,
         None => {
             return Err(Error::Unsupported(format!(
                 "`{}` is not a note link",
@@ -94,33 +105,52 @@ pub fn fetch(site: &Site, request: Request<'_>) -> Result<FetchOutput, Error> {
         return Err(Error::LinkExpired("the link carries no xsec_token".into()));
     }
 
-    let cookie = visitor()?;
     let fetched_at = Rfc3339::from_timestamp(jiff::Timestamp::now());
-    // 带着访客身份还被送去登录页、首页：回 `visitor-required`（这份不被收），宿主换一份再试这一条
-    let page = load_page(&http, &note_link, cookie)?;
-
-    write_note(&http, page, &note_link, &wanted, fetched_at, request.out)
+    // 第一个请求就带访客身份（照 ParseHub `parsers/parser/xhs.py:36-58` 的先后、XHS-Downloader 有 cookie 就带）
+    let visitor = match request.visitor_cookie {
+        Some(cookie) => match load_page(&http, &note_link, Some(cookie), Stage::VisitorPage) {
+            Ok(page) => {
+                return write_note(&http, page, &note_link, &wanted, fetched_at, request.out);
+            }
+            // 这份访客身份不被收：下面换手机版页面再试一次
+            Err(Error::VisitorRequired { at, .. }) => format!(
+                "visitor-page: {at} (user agent from the visitor window: {})",
+                http.visitor_agent()
+            ),
+            Err(other) => return Err(other.at_stage(Stage::VisitorPage)),
+        },
+        None => "visitor-page: not requested, no visitor identity was handed over".to_owned(),
+    };
+    // 手机版页面，不带任何 cookie：还被送去登录页、首页，回 `visitor-required`，宿主换一份访客身份再试这一条
+    match load_page(&mobile, &note_link, None, Stage::MobilePage) {
+        Ok(page) => write_note(&mobile, page, &note_link, &wanted, fetched_at, request.out),
+        Err(Error::VisitorRequired { at, .. }) => Err(Error::VisitorRequired {
+            at: format!("{visitor}; mobile-page: {at}"),
+            cookie_tried: request.visitor_cookie.is_some(),
+        }),
+        Err(other) => Err(other.at_stage(Stage::MobilePage)),
+    }
 }
 
-/// 取到的一篇笔记；`status` 是笔记页的 HTTP 状态。
+/// 取到的一篇笔记；`status` 是笔记页的 HTTP 状态，`stage` 是哪一段取到的。
 pub(crate) struct Page {
     pub note: Note,
     pub status: u16,
+    pub stage: Stage,
 }
 
 /// 请求一次笔记页（加上最多几跳指向同一篇笔记的重定向），认出拿到的是什么。
 /// 指向首页、登录页、验证页、404 页的重定向只看地址，不去请求。
-/// 送去首页、登录页的回 `visitor-required`，这次带着访客身份。
-fn load_page(http: &Http<'_>, note: &NoteLink, cookie: &Cookie) -> Result<Page, Error> {
+/// 送去首页、登录页、页面没给这篇的内容，回 `visitor-required`。`cookie` 为空时一个 cookie 都不带。
+fn load_page(
+    http: &Http<'_>,
+    note: &NoteLink,
+    cookie: Option<&Cookie>,
+    stage: Stage,
+) -> Result<Page, Error> {
     let mut at = note.page_url(http.site());
     for _ in 0..PAGE_HOPS {
-        let mut response = http.get(
-            &at,
-            Purpose::Page {
-                cookie: Some(cookie),
-            },
-            PAGE_TIMEOUT,
-        )?;
+        let mut response = http.get(&at, Purpose::Page { cookie }, PAGE_TIMEOUT)?;
         let status = response.status();
         if let Some(next) = http::location(&response, &at)? {
             refuse_redirect(http.site(), &next, &note.id)?;
@@ -171,7 +201,11 @@ fn load_page(http: &Http<'_>, note: &NoteLink, cookie: &Cookie) -> Result<Page, 
             }
             let parsed = state::extract(&text)?;
             match state::note(&parsed, &note.id) {
-                Ok(n) => Ok(Page { note: n, status }),
+                Ok(n) => Ok(Page {
+                    note: n,
+                    status,
+                    stage,
+                }),
                 // 页面结构在、这篇的内容没给：和被送回首页一样，是要访客 cookie 的样子
                 Err(StateError::Absent(id)) => Err(Error::VisitorRequired {
                     at: format!("a page without content for note {id}"),
@@ -302,6 +336,7 @@ pub(crate) fn write_note(
     out: &Path,
 ) -> Result<FetchOutput, Error> {
     let note = page.note;
+    let page_stage = page.stage;
     let mut missing = Vec::new();
     let mut reasons: Vec<String> = Vec::new();
     let mut failed: Vec<serde_json::Value> = Vec::new();
@@ -456,7 +491,8 @@ pub(crate) fn write_note(
             "video": video_record,
             "failed": failed,
             "subtitle": subtitle_record,
-            "visitorCookieUsed": true,
+            "visitorCookieUsed": page_stage == Stage::VisitorPage,
+            "stage": page_stage.as_str(),
         });
         fs::write(out.join("meta.json"), pretty(&meta)?)?;
         if note.title.is_none()

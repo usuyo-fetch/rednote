@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 use usuyo_fetch_rednote::fetch::{self, Request};
-use usuyo_fetch_rednote::{Error, Lang, Site, link, visitor_cookie};
+use usuyo_fetch_rednote::{Error, Lang, Site, link, visitor};
 use usuyo_plugin_kit::fetch::{Call, USAGE};
 use usuyo_plugin_kit::protocol::{CallFailure, Envelope, ErrorCode, FetchHealth, OutputKind};
 
@@ -85,14 +85,15 @@ fn run_fetch(
     want: Option<BTreeSet<OutputKind>>,
 ) -> anyhow::Result<usuyo_plugin_kit::protocol::FetchOutput> {
     check_out(&out)?;
-    let cookie = visitor_cookie(site)?;
+    let visitor = visitor(site)?;
     Ok(fetch::fetch(
         site,
         Request {
             input,
             out: &out,
             want,
-            visitor_cookie: cookie.as_ref(),
+            visitor_cookie: visitor.as_ref().map(|v| &v.cookie),
+            user_agent: visitor.as_ref().and_then(|v| v.user_agent.as_deref()),
         },
     )?)
 }

@@ -41,12 +41,26 @@ pub enum Error {
     /// 页面回了，但不是能用的回答：带着页面的开头，宿主记进失败日志。
     #[error("{error}")]
     Answered { error: Box<Error>, answer: String },
+    /// 取笔记页的哪一段（`visitor-page`、`mobile-page`）出的错：消息前面写上，宿主的失败日志里看得出。
+    #[error("{stage}: {error}")]
+    AtStage {
+        stage: &'static str,
+        error: Box<Error>,
+    },
 }
 
 /// 留给失败日志的页面开头最多多少字节。
 const ANSWER_BYTES: usize = 4096;
 
 impl Error {
+    /// 写明是取笔记页的哪一段出的错。
+    pub(crate) fn at_stage(self, stage: crate::fetch::Stage) -> Error {
+        Error::AtStage {
+            stage: stage.as_str(),
+            error: Box::new(self),
+        }
+    }
+
     /// 带上页面的开头（`text` 是整页，只留开头）。
     pub fn answered(self, text: &str) -> Error {
         let mut end = text.len().min(ANSWER_BYTES);
@@ -92,6 +106,10 @@ impl Error {
         };
         match self {
             Error::Answered { error, answer } => error.to_failure(lang).with_detail(answer),
+            Error::AtStage { error, .. } => CallFailure {
+                message,
+                ..error.to_failure(lang)
+            },
             Error::Unsupported(_) => with(ErrorCode::UnsupportedInput, None),
             Error::InvalidArgs(_) => with(ErrorCode::InvalidArgs, None),
             Error::LinkExpired(_) => CallFailure {

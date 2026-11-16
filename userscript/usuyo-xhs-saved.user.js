@@ -573,6 +573,8 @@
 
   return Object.freeze({
     ownUserId,
+    /** 一个值的形状（键、类型、长度），不含值。 */
+    shapeOf: (v) => shapeOf(v),
     startedAs: STARTED_AS,
     /** 计数：经过脚本的请求、看过的、认出的回答。 */
     stats: () => ({ requests: answerStats.requests, looked: answerStats.looked, recognised: answerStats.recognised }),

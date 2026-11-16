@@ -22,6 +22,17 @@ struct Got {
 }
 
 fn run(fake: &Fake, input: &str, cookie: Option<&str>, want: Option<&[OutputKind]>) -> Got {
+    run_as(fake, input, cookie, None, want)
+}
+
+/// `user_agent` 是宿主随访客身份交来的、取它的那个窗口的 UA。
+fn run_as(
+    fake: &Fake,
+    input: &str,
+    cookie: Option<&str>,
+    user_agent: Option<&str>,
+    want: Option<&[OutputKind]>,
+) -> Got {
     let dir = tempfile::tempdir().unwrap();
     let host = url::Url::parse(&fake.web).unwrap();
     let cookie = cookie.map(|c| Cookie::new(c, [host.host_str().unwrap()]));
@@ -32,6 +43,7 @@ fn run(fake: &Fake, input: &str, cookie: Option<&str>, want: Option<&[OutputKind
             out: dir.path(),
             want: want.map(|w| w.iter().copied().collect()),
             visitor_cookie: cookie.as_ref(),
+            user_agent,
         },
     );
     Got { result, dir }
@@ -332,23 +344,127 @@ fn the_first_page_request_carries_the_visitor_cookie() {
     }
 }
 
+/// 访客窗口是 WebKit（Safari 一类的 UA）：笔记页用同一个 UA 和 Safari 的 Accept 去要，不配 Chrome 的那一套
+/// （ParseHub `provider_api/xhs.py:20-30`：UA 和 Accept 对不上会被送去验证页）；没有交来 UA 时照旧用插件自己的 Chrome UA。
 #[test]
-fn without_a_visitor_identity_nothing_is_requested() {
+fn the_page_is_requested_with_the_visitor_windows_user_agent() {
+    let webkit = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15";
     let fake = Fake::start();
-    // 长链不请求笔记页，短链也不去展开
-    for input in [fake.note_url("ok"), format!("{}/abc", fake.short)] {
-        let f = failure(&run(&fake, &input, None, None));
-        assert_eq!(f.code, ErrorCode::VisitorRequired, "{input}");
-        assert!(
-            f.hint.as_deref().unwrap().contains("取一份访客身份"),
-            "{f:?}"
-        );
-    }
-    assert!(fake.seen().is_empty(), "{:?}", fake.seen());
+    let got = run_as(
+        &fake,
+        &fake.note_url("ok"),
+        Some(COOKIE),
+        Some(webkit),
+        Some(&[OutputKind::Text, OutputKind::Images]),
+    );
+    ok(&got);
+    let seen = fake.seen();
+    assert!(
+        seen.iter().all(|s| s.user_agent.as_deref() == Some(webkit)),
+        "{seen:?}"
+    );
+    let page = &fake.page_requests()[0];
+    assert_eq!(
+        page.accept.as_deref(),
+        Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+    );
+
+    let fake = Fake::start();
+    ok(&run(
+        &fake,
+        &fake.note_url("ok"),
+        Some(COOKIE),
+        Some(&[OutputKind::Text]),
+    ));
+    let page = &fake.page_requests()[0];
+    assert!(
+        page.user_agent.as_deref().unwrap().contains("Chrome/"),
+        "{page:?}"
+    );
+    assert!(page.accept.as_deref().unwrap().contains("image/avif"));
 }
 
-/// 带着访客身份还被送去登录页、首页，或页面里没有这篇：回 visitor-required 说这份不被收（宿主换一份），
-/// 不再请求一次，也不去请求送去的地方。
+/// 带着访客身份被送去登录页：失败的原因里写明这次用的是不是访客窗口的 UA，下次一眼看得出。
+#[test]
+fn a_refused_visitor_says_which_user_agent_went_with_it() {
+    let fake = Fake::start();
+    let f = failure(&run_as(
+        &fake,
+        &fake.note_url("login"),
+        Some(COOKIE),
+        Some(
+            "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15",
+        ),
+        None,
+    ));
+    assert_eq!(f.code, ErrorCode::VisitorRequired);
+    assert!(
+        f.message
+            .contains("user agent from the visitor window: true"),
+        "{}",
+        f.message
+    );
+}
+
+/// 没有交来访客身份：只用手机版页面、不带任何 cookie 请求一次（ParseHub 的第三段「移动端」），
+/// UA 是 iPhone Safari，Accept 配 Safari 的那一行。
+#[test]
+fn without_a_visitor_identity_only_the_mobile_page_is_asked_without_cookies() {
+    let fake = Fake::start();
+    let got = run(
+        &fake,
+        &fake.note_url("ok"),
+        None,
+        Some(&[OutputKind::Text, OutputKind::Meta]),
+    );
+    let out = ok(&got);
+    assert_eq!(out.title.as_deref(), Some("手冲咖啡的三段式注水"));
+    let pages = fake.page_requests();
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    assert_eq!(pages[0].cookie, None);
+    assert!(
+        pages[0].user_agent.as_deref().unwrap().contains("iPhone"),
+        "{pages:?}"
+    );
+    assert_eq!(
+        pages[0].accept.as_deref(),
+        Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+    );
+    let meta = read_json(got.dir.path(), "meta.json");
+    assert_eq!(meta["stage"], "mobile-page");
+    assert_eq!(meta["visitorCookieUsed"], false);
+}
+
+/// 带着访客身份被送去登录页：再用手机版页面、不带 cookie 请求一次，取到了就是手机版那一段取到的。
+#[test]
+fn a_refused_visitor_falls_back_to_the_mobile_page_once() {
+    let fake = Fake::start();
+    let got = run(
+        &fake,
+        &fake.note_url("refused"),
+        Some(COOKIE),
+        Some(&[OutputKind::Text, OutputKind::Meta]),
+    );
+    let out = ok(&got);
+    assert_eq!(
+        out.text.as_deref().map(str::trim),
+        Some("第一段 40 克闷蒸 30 秒。")
+    );
+    let pages = fake.page_requests();
+    assert_eq!(pages.len(), 2, "{pages:?}");
+    assert_eq!(pages[0].cookie.as_deref(), Some(COOKIE));
+    assert_eq!(
+        pages[1].cookie, None,
+        "the mobile page goes without any cookie"
+    );
+    assert_eq!(
+        read_json(got.dir.path(), "meta.json")["stage"],
+        "mobile-page"
+    );
+}
+
+/// 两段都被送去登录页、首页，或页面里没有这篇：回 visitor-required 说这份访客身份不被收（宿主换一份），
+/// 原因里写着两段各自去了哪；不去请求送去的地方。
 #[test]
 fn a_rejected_visitor_identity_is_reported_for_replacement() {
     for token in ["home", "login", "absent"] {
@@ -356,9 +472,27 @@ fn a_rejected_visitor_identity_is_reported_for_replacement() {
         let f = failure(&run(&fake, &fake.note_url(token), Some(COOKIE), None));
         assert_eq!(f.code, ErrorCode::VisitorRequired, "{token}");
         assert!(f.hint.as_deref().unwrap().contains("换一份"), "{f:?}");
+        assert!(
+            f.message.contains("visitor-page: ") && f.message.contains("; mobile-page: "),
+            "{}",
+            f.message
+        );
         let pages = fake.page_requests();
-        assert_eq!(pages.len(), 1, "{token}: {pages:?}");
+        assert_eq!(pages.len(), 2, "{token}: {pages:?}");
         assert_eq!(pages[0].cookie.as_deref(), Some(COOKIE));
+        assert_eq!(pages[1].cookie, None);
+    }
+}
+
+/// 验证页、`/404/sec`：马上停，不再换手机版页面去试；原因里写着是哪一段。
+#[test]
+fn a_verification_page_stops_without_trying_the_mobile_page() {
+    for token in ["captcha", "sec"] {
+        let fake = Fake::start();
+        let f = failure(&run(&fake, &fake.note_url(token), Some(COOKIE), None));
+        assert_eq!(f.code, ErrorCode::Blocked, "{token}");
+        assert!(f.message.starts_with("visitor-page: "), "{}", f.message);
+        assert_eq!(fake.page_requests().len(), 1, "{token}");
     }
 }
 

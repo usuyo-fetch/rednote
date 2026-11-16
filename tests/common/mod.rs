@@ -24,6 +24,8 @@ pub struct Seen {
     pub target: String,
     pub cookie: Option<String>,
     pub referer: Option<String>,
+    pub user_agent: Option<String>,
+    pub accept: Option<String>,
 }
 
 /// 测试用的地址策略：只有 127.0.0.1 算公网，不查 DNS。
@@ -153,7 +155,25 @@ fn web_route(target: &str, cookie: Option<&str>, web: &str) -> Reply {
         "/sub/zh.vtt" => return reply("200 OK", "text/vtt", VTT),
         _ => {}
     }
-    // 笔记页的请求都该带着访客身份：没带的回 500，测试一眼看得出
+    // 不带 cookie 的只有手机版那一段：`refused`（访客身份不被收、手机版给了页面）和 `ok` 回手写的手机版页面，
+    // `login` 照样送去登录页；别的回 500，测试一眼看得出
+    if cookie.is_none() {
+        return match token(target).as_str() {
+            "refused" | "ok" => reply(
+                "200 OK",
+                "text/html; charset=utf-8",
+                fixture("mobile-note.html", web),
+            ),
+            "login" => redirect("302 Found", "/login?redirectPath=%2Fexplore".into()),
+            // 这几个照下面同样的回答走
+            "home" | "absent" | "captcha" | "sec" => web_page(target, web),
+            _ => reply(
+                "500 Internal Server Error",
+                "text/plain",
+                "no visitor cookie",
+            ),
+        };
+    }
     if !with_cookie {
         return reply(
             "500 Internal Server Error",
@@ -161,6 +181,12 @@ fn web_route(target: &str, cookie: Option<&str>, web: &str) -> Reply {
             "no visitor cookie",
         );
     }
+    web_page(target, web)
+}
+
+/// 笔记页按 `xsec_token` 回的样子。
+fn web_page(target: &str, web: &str) -> Reply {
+    let path = target.split('?').next().unwrap_or_default();
     let note_paths = [format!("/explore/{ID}"), format!("/discovery/item/{ID}")];
     if !note_paths.iter().any(|p| p == path) {
         return reply("404 Not Found", "text/html", "<html>404</html>");
@@ -191,6 +217,7 @@ fn web_route(target: &str, cookie: Option<&str>, web: &str) -> Reply {
             "302 Found",
             "/login?redirectPath=%2Fexplore&exSource=".into(),
         ),
+        "refused" => redirect("302 Found", "/login?redirectPath=%2Fexplore".into()),
         "expired" => redirect(
             "302 Found",
             "/404/sec_ab12cd?redirectPath=%2Fexplore&error_code=300031&error_msg=%E5%BD%93%E5%89%8D%E7%AC%94%E8%AE%B0%E6%9A%82%E6%97%B6%E6%97%A0%E6%B3%95%E6%B5%8F%E8%A7%88".into(),
@@ -267,6 +294,8 @@ fn spawn(
                 let target = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
                 let mut cookie = None;
                 let mut referer = None;
+                let mut user_agent = None;
+                let mut accept = None;
                 loop {
                     let mut header = String::new();
                     if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
@@ -276,6 +305,8 @@ fn spawn(
                         match name.to_ascii_lowercase().as_str() {
                             "cookie" => cookie = Some(value.trim().to_owned()),
                             "referer" => referer = Some(value.trim().to_owned()),
+                            "user-agent" => user_agent = Some(value.trim().to_owned()),
+                            "accept" => accept = Some(value.trim().to_owned()),
                             _ => {}
                         }
                     }
@@ -285,6 +316,8 @@ fn spawn(
                     target: target.clone(),
                     cookie: cookie.clone(),
                     referer,
+                    user_agent,
+                    accept,
                 });
                 let r = route(&target, cookie.as_deref(), &web);
                 let mut head = format!(

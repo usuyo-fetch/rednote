@@ -13,5 +13,5 @@ mod site;
 pub mod state;
 
 pub use error::{Error, Lang};
-pub use http::visitor_cookie;
+pub use http::visitor;
 pub use site::Site;
